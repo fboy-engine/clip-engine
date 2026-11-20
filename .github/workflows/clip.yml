@@ -87,7 +87,8 @@ jobs:
           printf '%s\n' "$YT_COOKIES" > "$RUNNER_TEMP/yt_cookies.txt"
           echo "YT_COOKIES_FILE=$RUNNER_TEMP/yt_cookies.txt" >> "$GITHUB_ENV"
           echo "cookie file lines: $(grep -vc '^#' "$RUNNER_TEMP/yt_cookies.txt" || true), youtube/google lines: $(grep -cE 'youtube|google' "$RUNNER_TEMP/yt_cookies.txt" || true)"
-      - name: Stream info
+      - name: Stream info (metadata only; non-fatal, the download has its own client fallback)
+        continue-on-error: true
         timeout-minutes: 4
         env:
           URL: ${{ inputs.url }}

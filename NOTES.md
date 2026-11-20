@@ -36,3 +36,8 @@ Bug caught before it skewed numbers: a HuggingFace cache stores each file as blo
 ## Install step hung silently again (run 44812916359, 2026-11-21)
 First real transcription run died at "Install tools" with only "timed out after 6 minutes" and no output (apt used `-qq`, so I cannot tell which command stalled; same family as run 44806136531). Nothing after it ran: no download, no transcription. Fix (diagnosis-first, no retry loop): apt forced to IPv4, `timeout` on apt update (120 s), apt install (240 s) and pip (150 s), timestamped phase echoes, step limit 8 min. If it stalls again the log will name the exact command.
 
+
+
+## YouTube bot check on anonymous WARP (run 44814362584, 2026-11-21)
+Install + WARP passed (run 2), then `cli info` failed: "Sign in to confirm you're not a bot" (default player client, WARP egress, no cookies). The earlier anonymous success (run 44807660941) used the same path, so this looks like a per-IP/per-time block, not a code bug. `info` is metadata only and tries ONE client, while `fetch` tries up to 3 (default, tv, mweb), so the info step is now continue-on-error and the download decides. If the download also gets the bot check, the options are: re-export YT_COOKIES (risks that account on datacenter IPs), or a different stream/IP; that is the user's call.
+\n

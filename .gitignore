@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+work/
+*.mp4
+*.wav
+cookies*.txt
+.env

@@ -40,4 +40,3 @@ First real transcription run died at "Install tools" with only "timed out after 
 
 ## YouTube bot check on anonymous WARP (run 44814362584, 2026-11-21)
 Install + WARP passed (run 2), then `cli info` failed: "Sign in to confirm you're not a bot" (default player client, WARP egress, no cookies). The earlier anonymous success (run 44807660941) used the same path, so this looks like a per-IP/per-time block, not a code bug. `info` is metadata only and tries ONE client, while `fetch` tries up to 3 (default, tv, mweb), so the info step is now continue-on-error and the download decides. If the download also gets the bot check, the options are: re-export YT_COOKIES (risks that account on datacenter IPs), or a different stream/IP; that is the user's call.
-\n

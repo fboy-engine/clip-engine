@@ -49,6 +49,9 @@ on:
       find_top:
         description: How many signal-ranked windows to transcribe
         default: "8"
+      gemini_model:
+        description: Gemini model to try FIRST (empty = newest flash from ListModels)
+        default: ""
       cache_only:
         description: Fail instead of downloading if the source cache misses
         type: boolean
@@ -223,6 +226,7 @@ jobs:
         timeout-minutes: 20
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ inputs.gemini_model }}
           HF_HUB_DISABLE_PROGRESS_BARS: "1"
           START: ${{ inputs.start_sec }}
           FIND_MODEL: ${{ inputs.find_model }}

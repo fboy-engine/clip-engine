@@ -1,9 +1,9 @@
 # STATUS
 
-_Last updated 2026-11-21. No finished clip has been produced yet._
+_Last updated 2026-11-21 (find run 44824284792)._ No finished clip has been produced yet._
 
 ## CI
-- unit-tests: green on main at 84a4acd. Confirm green on GitHub after each push.
+- unit-tests: green on main at 655c47b (58 tests). 7ad9bb6 and af98c0e were red: CI had no numpy; fixed in eb85dab by `pip install numpy`. Confirm green on GitHub after each push.
 
 ## Verified on real services
 - Gemini: real call passed (run 44805153126). Model chain, 75 s deadline, MAX_CALLS=4. GEMINI_MODEL leads the chain. See NOTES.md.
@@ -19,14 +19,25 @@ _Last updated 2026-11-21. No finished clip has been produced yet._
 - transcribe.py + `cli transcribe`: faster-whisper int8 + Silero VAD, ffmpeg decode (PyAV removed). Measured on a real run 44821362284 (see Verified).
 
 ## Not built yet
-- Gemini scoring/watching gates, visual and motion gates, cam_layout, caption_lane, select_clean, hook_title, hook_gemini, render_clip, grade_clip, grade_checks, asr_fix, auto-find window (end_sec=0 is rejected by `cli fetch`).
+- Visual and motion gates (beyond the candidate-finding motion signal), cam_layout, caption_lane, select_clean, hook_title, hook_gemini, render_clip, grade_clip, grade_checks, asr_fix, auto-find window (end_sec=0 is rejected by `cli fetch`).
+
+## Built and unit-tested (synthetic) this session
+- analyze.py: per-second audio energy, VAD speech share, screen motion (ffmpeg 64x36 gray @4 fps), silence/speech-gap cut points, heat peaks -> 25-45 s windows. Not speech-only: payoff gate has a voice path and an action path (motion burst + audio lift, no speech needed).
+- find.py / findrun.py / `cli find`: top windows -> tiny/small ASR on those windows only -> local gate -> Gemini text score -> Gemini watching gate (6 frames) on the top 3 -> report + out/candidates.json. A missing Gemini stage is reported, never counted as zero.
+- download.py: bot check = one 30 s backoff + ONE retry, then BotCheck (stop and report). Cookie step fails clearly on an empty or stale YT_COOKIES.
+- clip.yml inputs: find, find_model, find_top, cache_only (fail instead of downloading on a cache miss), gemini_model.
+
+## Verified on a real run (44824284792, cached window 1200-1500, cache hit true, no download)
+- audio decode 0.5 s, VAD 0.7 s (speech 90 s of 300), motion 32.3 s, small ASR on 8 windows 25.2 s, 8 candidate windows.
+- Only 2 of 8 windows passed the payoff gate. Gemini scoring got HTTP 503 (gemini-3.8-flash high demand), so the Gemini score and the watching gate have NOT run on real data yet.
 
 ## Not verified
-- Anything past download on a real stream.
+- Gemini scoring and watching gate on real data (503 in run 44824284792). Anything past candidate finding on a real stream.
 - YT_COOKIES is stale; cookies are off by default and not needed so far.
 
 ## Workflow
 - clip.yml: restore source cache first; a cache hit skips WARP, cookies, stream info and download. A fresh download is saved to the cache right after it succeeds (not at job end). transcribe_models runs one process per model.
 
 ## Next
-- ASR design from numbers (see NOTES.md): VAD first, tiny/small on candidate windows, large-v3 only on the final 25-45 s clip. Next: wire ranking + Gemini gates on the cached window.
+- Re-run find once with gemini_model pinned to a model that answered before, then report the top 3 candidates before rendering anything.
+- Then, in small commits with tests green: visual/motion gates, cam_layout, caption_lane, select_clean, hooks, render_clip, grade_clip, grade_checks, asr_fix; one reviewed clip.

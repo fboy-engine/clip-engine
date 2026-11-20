@@ -97,6 +97,15 @@ def cmd_transcribe(a):
     return 0
 
 
+def cmd_find(a):
+    from . import findrun
+    try:
+        return findrun.run(a.media, a.offset, a.model, a.top, a.out, a.cache_dir)
+    except Exception as e:  # report the real failure, never fake a pass
+        print(f"FAIL find: {type(e).__name__}: {str(e)[:300]}")
+        return 1
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="clip_engine")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -122,6 +131,14 @@ def main(argv=None):
     t.add_argument("--cache-dir", dest="cache_dir", default=transcribe_default_cache())
     t.add_argument("--out", default="out")
     t.set_defaults(fn=cmd_transcribe)
+    fd = sub.add_parser("find")
+    fd.add_argument("media")
+    fd.add_argument("--offset", type=float, default=0.0, help="stream second where the media starts")
+    fd.add_argument("--model", default="small")
+    fd.add_argument("--top", type=int, default=8)
+    fd.add_argument("--cache-dir", dest="cache_dir", default=transcribe_default_cache())
+    fd.add_argument("--out", default="out")
+    fd.set_defaults(fn=cmd_find)
     a = p.parse_args(argv)
     return a.fn(a)
 

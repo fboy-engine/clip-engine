@@ -39,6 +39,20 @@ on:
       large_max_sec:
         description: Cap audio seconds for large-v3 (0 = whole window)
         default: "120"
+      find:
+        description: Rank candidate moments in the window (signals, tiny/small ASR, Gemini gates)
+        type: boolean
+        default: false
+      find_model:
+        description: ASR model for candidate windows only (tiny or small)
+        default: small
+      find_top:
+        description: How many signal-ranked windows to transcribe
+        default: "8"
+      cache_only:
+        description: Fail instead of downloading if the source cache misses
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -100,6 +114,14 @@ jobs:
             out/source.mp4
             out/probe.json
           key: ${{ steps.sk.outputs.key }}
+      - name: Source cache status
+        run: |
+          echo "source cache hit: ${{ steps.srcc.outputs.cache-hit }} key: ${{ steps.sk.outputs.key }}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Cache-only guard (no download when asked not to)
+        if: ${{ inputs.cache_only && steps.srcc.outputs.cache-hit != 'true' }}
+        run: |
+          echo "CACHE MISS for ${{ steps.sk.outputs.key }}; cache_only=true so nothing is downloaded"
+          exit 1
       - name: WARP (egress check fails the job if IP did not change)
         if: ${{ inputs.warp && steps.srcc.outputs.cache-hit != 'true' }}
         timeout-minutes: 4
@@ -146,21 +168,23 @@ jobs:
         with:
           name: dl-check-${{ github.run_id }}
           path: out/probe.json
-      - name: Whisper cache key
-        if: ${{ inputs.transcribe_models != '' }}
+      - name: Whisper cache key (find reuses the tiny-small-large-v3 cache)
+        if: ${{ inputs.transcribe_models != '' || inputs.find }}
         id: wk
         env:
           MODELS: ${{ inputs.transcribe_models }}
-        run: echo "key=whisper-$(echo "$MODELS" | tr ',' '-')-v1" >> "$GITHUB_OUTPUT"
+        run: |
+          M="${MODELS:-tiny,small,large-v3}"
+          echo "key=whisper-$(echo "$M" | tr ',' '-')-v1" >> "$GITHUB_OUTPUT"
       - name: Cache whisper models
-        if: ${{ inputs.transcribe_models != '' }}
+        if: ${{ inputs.transcribe_models != '' || inputs.find }}
         uses: actions/cache@v4
         with:
           path: ~/.cache/clip-engine/models
           key: ${{ steps.wk.outputs.key }}
           restore-keys: whisper-
       - name: Install faster-whisper
-        if: ${{ inputs.transcribe_models != '' }}
+        if: ${{ inputs.transcribe_models != '' || inputs.find }}
         timeout-minutes: 6
         run: |
           echo "$(date +%T) pip faster-whisper"
@@ -185,6 +209,23 @@ jobs:
             echo "cpus: $(nproc), mem: $(free -m | awk '/Mem:/{print $2}') MB"
           } >> "$GITHUB_STEP_SUMMARY"
           exit $RC
+      - name: Find candidates (voice, audio peaks, silence, motion; ASR on candidates; Gemini gates)
+        if: ${{ inputs.find }}
+        timeout-minutes: 20
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          HF_HUB_DISABLE_PROGRESS_BARS: "1"
+          START: ${{ inputs.start_sec }}
+          FIND_MODEL: ${{ inputs.find_model }}
+          FIND_TOP: ${{ inputs.find_top }}
+        run: python -m clip_engine.cli find out/source.mp4 --offset "$START" --model "$FIND_MODEL" --top "$FIND_TOP" --out out
+      - name: Upload candidates (json only, no video)
+        if: ${{ always() && inputs.find }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: find-${{ github.run_id }}
+          path: out/candidates.json
+          if-no-files-found: warn
       - name: Upload transcription results (json only, no video)
         if: ${{ always() && inputs.transcribe_models != '' }}
         uses: actions/upload-artifact@v4

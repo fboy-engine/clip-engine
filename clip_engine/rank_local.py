@@ -16,24 +16,35 @@ class Window:
     speech_ratio: float      # 0..1 of window with voice (VAD)
     peak_rms_db: float       # loudest second, dBFS
     mean_rms_db: float
+    motion_lift: float = 0.0  # screen-motion burst above the window mean, in sd (0 = unknown)
+    heat: float = 0.0         # combined signal strength at the peak (analyze.heat_series)
+    peak_t: float = 0.0       # second of the peak, relative to the analysed media
+
+
+ACTION_MOTION = 2.5   # screen-motion burst (sd above window mean) for a voiceless moment
+ACTION_AUDIO = 4.0    # and an audio lift (dB) that goes with it (crash, gunfire, engine)
 
 
 def payoff_gate(w):
-    """Needs speech/reaction AND a payoff (energy peak above the average).
+    """A moment needs a payoff, from either path:
 
-    Pure action with no voice fails. Flat rambling fails.
+    voice path:  speech + (reaction words or a loud peak) + energy lift.
+    action path: a screen-motion burst AND an audio lift, speech not required, because
+                 GTA has quiet action stretches. Flat rambling and idle footage fail.
     """
     dur = w.end - w.start
     if not (MIN_LEN <= dur <= MAX_LEN):
         return False, "length"
-    if w.speech_ratio < 0.35:
-        return False, "not enough speech"
     lift = w.peak_rms_db - w.mean_rms_db
-    if not (REACTION.search(w.text) or lift >= 6):
-        return False, "no reaction/peak"
+    if w.speech_ratio >= 0.35 and lift >= 3 and (REACTION.search(w.text) or lift >= 6):
+        return True, "ok"
+    if w.motion_lift >= ACTION_MOTION and lift >= ACTION_AUDIO:
+        return True, "ok (action)"
+    if w.speech_ratio < 0.35 and w.motion_lift < ACTION_MOTION:
+        return False, "not enough speech or action"
     if lift < 3:
         return False, "no payoff (flat energy)"
-    return True, "ok"
+    return False, "no reaction/peak"
 
 
 def score(w):
@@ -41,6 +52,7 @@ def score(w):
     s = 2.0 * w.speech_ratio
     s += min(max(w.peak_rms_db - w.mean_rms_db, 0), 12) / 12 * 3.0
     s += 1.5 if REACTION.search(w.text) else 0
+    s += min(max(w.motion_lift, 0), 4) / 4 * 2.0
     s -= abs(dur - 35) / 35          # prefer ~35 s
     return s
 

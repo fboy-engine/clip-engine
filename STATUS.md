@@ -22,5 +22,5 @@ _Last updated 2026-11-21. No finished clip has been produced yet._
 - `YT_COOKIES` secret is stale; cookies are off by default and not needed so far.
 
 ## Known TODO
-- `GEMINI_MODEL` should lead the chain instead of replacing it.
+- (done) `GEMINI_MODEL` leads the chain; see NOTES.md.
 - Hosted-runner terms risk accepted by the user (see NOTES.md).

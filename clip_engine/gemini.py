@@ -1,8 +1,8 @@
 """Gemini client: runtime model discovery, fail-fast retries, model fallback.
 
 The old 404 came from a hardcoded model name Google retired, so we never trust
-a constant: GEMINI_MODEL env wins, else ListModels and take the newest flash
-models. 503 "high demand" and stalls are per-model, so each model gets few
+a constant: GEMINI_MODEL (if set) goes FIRST, then ListModels' newest flash
+models follow behind it as fallbacks. 503 "high demand" and stalls are per-model, so each model gets few
 tries and then the next candidate is used; -latest aliases are last resorts.
 Callers must treat GeminiUnavailable as "use the local fallback".
 The URL contains the key, so it is never printed or put in an exception.
@@ -106,9 +106,13 @@ def generate(prompt, key=None, retries=2, timeout=25, opener=_http, sleep=time.s
     t0 = clock()
     env = os.environ.get("GEMINI_MODEL")
     try:
-        models = [env] if env else candidates(list_models(key, opener), max_models)
+        listed = candidates(list_models(key, opener), max_models)
     except (urllib.error.URLError, OSError, ValueError, KeyError):
-        raise GeminiUnavailable("ListModels failed")
+        if not env:
+            raise GeminiUnavailable("ListModels failed")
+        listed = []  # pinned model still works without ListModels
+    # GEMINI_MODEL LEADS the chain; the ranked candidates stay behind it
+    models = ([env] if env else []) + [m for m in listed if m != env]
     if not models:
         raise GeminiUnavailable("no usable flash model in ListModels")
     body = {"contents": [{"parts": [{"text": prompt}]}]}

@@ -26,3 +26,6 @@ Commits use author/committer `240231847+fboy-engine@users.noreply.github.com`. E
 ## unit-tests RED since 6534c10 (fixed 2026-11-21)
 Failing: test_core.T.test_timeout_retries_then_gives_up (9 != 3). Cause: the mixed chain (model + `gemini-flash-latest` + `gemini-flash-lite-latest`) x retries=3 = 9 calls on a timeout; the test still expected 3. Fix: `MAX_CALLS = 4` total generateContent calls per `generate()` (param `max_calls`), checked before every call, inside the 75 s deadline; raises GeminiUnavailable("... call cap 4"). The test now asserts `gemini.MAX_CALLS`; new test `test_total_call_cap_stops_the_chain`. Effect: with default retries=2 a dead chain tries at most 2 models, so a 503 on the lead models can no longer cost ~9 calls. Full suite 27/27 locally before push.
 
+## GEMINI_MODEL now LEADS the chain (2026-11-21)
+Before: GEMINI_MODEL replaced the whole chain, so a stalled pinned model had no fallback. Now `generate()` builds `[GEMINI_MODEL] + ranked ListModels candidates + -latest aliases` (deduped), still bounded by MAX_CALLS=4 and the 75 s deadline. If ListModels itself fails but GEMINI_MODEL is set, the pinned model is still tried alone.
+

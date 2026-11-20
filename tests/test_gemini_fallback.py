@@ -1,5 +1,7 @@
+import os
 import unittest
 import urllib.error
+from unittest import mock
 
 from clip_engine import gemini
 
@@ -79,6 +81,49 @@ class T(unittest.TestCase):
                             max_calls=3)
         self.assertEqual(len(calls), 3)
         self.assertIn("call cap", str(cm.exception))
+
+    def test_env_model_leads_chain_then_falls_back(self):
+        used = []
+
+        def op(url, body=None, timeout=0):
+            if "/models?" in url:
+                return LIST2
+            m = url.split("/models/")[1].split(":")[0]
+            used.append(m)
+            if m == "pinned-model":
+                raise urllib.error.HTTPError(url, 503, "busy", {}, None)
+            return OK
+        with mock.patch.dict(os.environ, {"GEMINI_MODEL": "pinned-model"}):
+            out = gemini.generate("hi", key="k", retries=1, opener=op, sleep=lambda s: None)
+        self.assertEqual(out, "ok")
+        self.assertEqual(used, ["pinned-model", "gemini-3.8-flash"])
+
+    def test_env_model_is_not_duplicated_and_survives_listmodels_failure(self):
+        used = []
+
+        def op(url, body=None, timeout=0):
+            if "/models?" in url:
+                raise urllib.error.URLError("down")
+            used.append(url.split("/models/")[1].split(":")[0])
+            return OK
+        with mock.patch.dict(os.environ, {"GEMINI_MODEL": "gemini-3.6-flash"}):
+            self.assertEqual(gemini.generate("hi", key="k", opener=op, sleep=lambda s: None), "ok")
+        self.assertEqual(used, ["gemini-3.6-flash"])
+
+    def test_env_model_deduped_when_also_listed(self):
+        used = []
+
+        def op(url, body=None, timeout=0):
+            if "/models?" in url:
+                return LIST2
+            used.append(url.split("/models/")[1].split(":")[0])
+            raise urllib.error.HTTPError(url, 503, "busy", {}, None)
+        with mock.patch.dict(os.environ, {"GEMINI_MODEL": "gemini-3.8-flash"}):
+            with self.assertRaises(gemini.GeminiUnavailable):
+                gemini.generate("hi", key="k", retries=1, opener=op, sleep=lambda s: None,
+                                max_calls=10)
+        self.assertEqual(used.count("gemini-3.8-flash"), 1)
+        self.assertEqual(used[0], "gemini-3.8-flash")
 
     def test_deadline_stops_the_chain(self):
         t = [0.0]

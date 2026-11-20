@@ -41,16 +41,21 @@ concurrency:
 jobs:
   clip:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install tools (latest yt-dlp, JS runtime, ffmpeg)
+        timeout-minutes: 6
         run: |
-          command -v ffmpeg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg; }
-          pip install -q -U "yt-dlp[default]"
+          if ! command -v ffmpeg >/dev/null; then
+            APT="-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+            sudo apt-get $APT update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get $APT install -y -qq --no-install-recommends ffmpeg
+          fi
+          pip install -q -U --default-timeout 30 --retries 2 "yt-dlp[default]"
           echo "yt-dlp $(yt-dlp --version) | node $(node --version) | $(ffmpeg -version | head -n1)"
       - name: Dry-run guard
         env:
@@ -59,6 +64,7 @@ jobs:
           [ "$DRY_RUN" = "true" ] || echo "note: posting is not built; running as dry run anyway"
       - name: WARP (egress check fails the job if IP did not change)
         if: ${{ inputs.warp }}
+        timeout-minutes: 4
         run: bash scripts/warp_up.sh
       - name: Cookies (secret to temp file, names only in logs)
         if: ${{ inputs.cookies }}
@@ -70,10 +76,12 @@ jobs:
           echo "YT_COOKIES_FILE=$RUNNER_TEMP/yt_cookies.txt" >> "$GITHUB_ENV"
           echo "cookie file lines: $(grep -vc '^#' "$RUNNER_TEMP/yt_cookies.txt" || true), youtube/google lines: $(grep -cE 'youtube|google' "$RUNNER_TEMP/yt_cookies.txt" || true)"
       - name: Stream info
+        timeout-minutes: 4
         env:
           URL: ${{ inputs.url }}
         run: python -m clip_engine.cli info "$URL"
       - name: Download window
+        timeout-minutes: 15
         env:
           URL: ${{ inputs.url }}
           START: ${{ inputs.start_sec }}

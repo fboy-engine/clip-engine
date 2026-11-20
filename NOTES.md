@@ -52,3 +52,11 @@ Window 1200-1500 s of LHoHInbPkk0, warp on, tiny/small/large-v3. Install, cache 
 Fix (commit 19d0ad4): the WARP step gets GITHUB_TOKEN from github.token; the script now pins wgcf 2.3.1 and wireproxy 1.1.3 and downloads them from direct github.com release URLs, so it never calls the releases API (override with WGCF_VERSION / WIREPROXY_VERSION). Both URLs checked to return 200.
 Also: clip.yml now restores the source cache first (a hit skips WARP, cookies, info and download) and saves the cache right after a successful download. Commit 84a4acd claimed this but did not change clip.yml.
 Connector note: the first two attempts to push the earlier fix errored on the connector side and wrote nothing; the next worked.
+
+## Run 44821362284 (2026-11-21): VOD download + ASR benchmark PASSED
+Window 1200-1500 s of LHoHInbPkk0 (ended stream), warp on, cookies off. WARP ok (warp=on loc=US), download 17 s (201.98 MiB, 11.75 MiB/s), stream copy, 1080p60 h264, 305 s, 211.8 MB, default client via proxy. Cache saved right after download (step 3 s); model cache saved post-job.
+ASR, 4 vCPU runner, int8, beam 1, language en, fw 1.2.1. audio s / transcribe s (RTF over audio) / peak RSS / model download:
+- tiny: 300 / 4.05 (0.013) / 531 MB / 78.2 MB (dl 3 s), 48 segs, 237 words
+- small: 300 / 13.75 (0.046) / 1096 MB / 486 MB (dl 7 s), 46 segs, 225 words
+- large-v3: 120 (capped) / 45.86 (0.382) / 5236 MB / 3091 MB (dl 24 s, load 4.6 s), 15 segs, 165 words
+VAD 0.5 s per 300 s window; speech 90 s of 300 (30%) in this window, 76.4 s of the first 120 s. Transcribe time covers speech only. Quality on the same opening: tiny and small mis-hear ("Bop", "discredit", repeated "guy"); large-v3 is clean ("describe it", "none of your ..."). Caveats: window was not very talkative (picked blind); speech_sec came out exactly 90.0 for tiny and small (same VAD, so consistent, but a round number). Per-speech-second cost: tiny ~0.045, small ~0.15, large-v3 ~0.6, so large-v3 on a 45 s clip is ~20-30 s plus model load.

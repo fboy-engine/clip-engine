@@ -94,8 +94,9 @@ def resolve_model(key, opener=_http):
 
 def generate(prompt, key=None, retries=2, timeout=25, opener=_http, sleep=time.sleep,
              max_chars=6000, max_models=MAX_MODELS, deadline=DEADLINE, clock=time.monotonic,
-             max_calls=MAX_CALLS):
-    """Short prompt in, text out. Fails fast: each model gets `retries` tries
+             max_calls=MAX_CALLS, images=None):
+    """Short prompt in, text out. `images` = base64 JPEG strings sent with the prompt
+    (the 'watching' gate). Fails fast: each model gets `retries` tries
     (429/5xx/timeouts, short backoff), then the next candidate. A whole-call
     deadline and a total call cap (`max_calls`) stop long chains.
     Auth/bad-request errors stop at once."""
@@ -115,7 +116,9 @@ def generate(prompt, key=None, retries=2, timeout=25, opener=_http, sleep=time.s
     models = ([env] if env else []) + [m for m in listed if m != env]
     if not models:
         raise GeminiUnavailable("no usable flash model in ListModels")
-    body = {"contents": [{"parts": [{"text": prompt}]}]}
+    parts = [{"text": prompt}] + [{"inline_data": {"mime_type": "image/jpeg", "data": b}}
+                                  for b in (images or [])]
+    body = {"contents": [{"parts": parts}]}
     notes = []
     calls = 0
     for model in models:

@@ -29,3 +29,7 @@ Failing: test_core.T.test_timeout_retries_then_gives_up (9 != 3). Cause: the mix
 ## GEMINI_MODEL now LEADS the chain (2026-11-21)
 Before: GEMINI_MODEL replaced the whole chain, so a stalled pinned model had no fallback. Now `generate()` builds `[GEMINI_MODEL] + ranked ListModels candidates + -latest aliases` (deduped), still bounded by MAX_CALLS=4 and the 75 s deadline. If ListModels itself fails but GEMINI_MODEL is set, the pinned model is still tried alone.
 
+## Transcription slice (2026-11-21)
+`clip_engine/transcribe.py` + `cli transcribe`: faster-whisper int8 on CPU, Silero VAD (bundled with faster-whisper) for speech stats and `vad_filter`, word timestamps in the {"w","s","e","p"} shape captions.py takes. Each run records decode/VAD/download/load/transcribe seconds, RTF, peak RSS, model size and cache hit in `out/metrics_<model>.json`. The clip workflow got `transcribe_models` (comma list, empty = skip) and `large_max_sec`; one process per model so peak RSS is per model; models cached with actions/cache in ~/.cache/clip-engine/models.
+Bug caught before it skewed numbers: a HuggingFace cache stores each file as blob + snapshot symlink, so naive directory sizing doubled the model size. `dir_size_mb` now counts each real file once (test added).
+

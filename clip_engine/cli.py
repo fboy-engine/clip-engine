@@ -36,6 +36,10 @@ def gemini_check(_a):
     return 1
 
 
+def transcribe_default_cache():
+    return os.environ.get("CLIP_MODEL_CACHE", os.path.expanduser("~/.cache/clip-engine/models"))
+
+
 def _env():
     return os.environ.get("YT_COOKIES_FILE"), os.environ.get("YT_PROXY")
 
@@ -75,6 +79,24 @@ def cmd_fetch(a):
     return 0
 
 
+def cmd_transcribe(a):
+    from . import transcribe
+    try:
+        m, segs = transcribe.run(a.media, a.model, a.start, a.end or None, a.max_sec or None,
+                                 a.language, a.beam, a.cache_dir, a.out)
+    except Exception as e:  # report the real failure, never fake a pass
+        print(f"FAIL transcribe {a.model}: {type(e).__name__}: {str(e)[:300]}")
+        return 1
+    print("METRICS " + json.dumps(m))
+    text = " ".join(s["text"] for s in segs)
+    print(f"words={m['n_words']} sample: {text[:300]}")
+    if m["n_words"] == 0:
+        print("FAIL transcribe: zero words")
+        return 1
+    print(f"PASS transcribe {a.model}")
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="clip_engine")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -89,6 +111,17 @@ def main(argv=None):
     f.add_argument("--out", default="out")
     f.add_argument("--live", action="store_true")
     f.set_defaults(fn=cmd_fetch)
+    t = sub.add_parser("transcribe")
+    t.add_argument("media")
+    t.add_argument("--model", default="small")
+    t.add_argument("--start", type=float, default=0.0)
+    t.add_argument("--end", type=float, default=0.0)
+    t.add_argument("--max-sec", dest="max_sec", type=float, default=0.0)
+    t.add_argument("--language", default=None)
+    t.add_argument("--beam", type=int, default=1)
+    t.add_argument("--cache-dir", dest="cache_dir", default=transcribe_default_cache())
+    t.add_argument("--out", default="out")
+    t.set_defaults(fn=cmd_transcribe)
     a = p.parse_args(argv)
     return a.fn(a)
 

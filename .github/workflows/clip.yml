@@ -33,6 +33,12 @@ on:
         description: Send the YT_COOKIES secret (off = anonymous via WARP)
         type: boolean
         default: false
+      transcribe_models:
+        description: Comma list of faster-whisper models to measure (empty = skip)
+        default: ""
+      large_max_sec:
+        description: Cap audio seconds for large-v3 (0 = whole window)
+        default: "120"
 permissions:
   contents: read
 concurrency:
@@ -41,7 +47,7 @@ concurrency:
 jobs:
   clip:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -95,6 +101,53 @@ jobs:
         with:
           name: dl-check-${{ github.run_id }}
           path: out/probe.json
+      - name: Whisper cache key
+        if: ${{ inputs.transcribe_models != '' }}
+        id: wk
+        env:
+          MODELS: ${{ inputs.transcribe_models }}
+        run: echo "key=whisper-$(echo "$MODELS" | tr ',' '-')-v1" >> "$GITHUB_OUTPUT"
+      - name: Cache whisper models
+        if: ${{ inputs.transcribe_models != '' }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/clip-engine/models
+          key: ${{ steps.wk.outputs.key }}
+          restore-keys: whisper-
+      - name: Install faster-whisper
+        if: ${{ inputs.transcribe_models != '' }}
+        timeout-minutes: 6
+        run: |
+          pip install -q --default-timeout 30 --retries 2 faster-whisper
+          python -c "import faster_whisper, ctranslate2; print('faster-whisper', faster_whisper.__version__, '| ctranslate2', ctranslate2.__version__)"
+      - name: Transcribe (one process per model so peak RSS is per model)
+        if: ${{ inputs.transcribe_models != '' }}
+        timeout-minutes: 30
+        env:
+          MODELS: ${{ inputs.transcribe_models }}
+          LARGE_MAX: ${{ inputs.large_max_sec }}
+          HF_HUB_DISABLE_PROGRESS_BARS: "1"
+        run: |
+          RC=0
+          for m in $(echo "$MODELS" | tr ',' ' '); do
+            MAX=0; [ "$m" = "large-v3" ] && MAX="$LARGE_MAX"
+            python -m clip_engine.cli transcribe out/source.mp4 --model "$m" --max-sec "$MAX" --language en --out out || RC=1
+          done
+          {
+            echo '### Transcription metrics'
+            for f in out/metrics_*.json; do [ -f "$f" ] && { echo '```json'; cat "$f"; echo '```'; }; done
+            echo "cpus: $(nproc), mem: $(free -m | awk '/Mem:/{print $2}') MB"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $RC
+      - name: Upload transcription results (json only, no video)
+        if: ${{ always() && inputs.transcribe_models != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: asr-${{ github.run_id }}
+          path: |
+            out/metrics_*.json
+            out/transcript_*.json
+          if-no-files-found: warn
       - name: Cleanup secrets
         if: always()
         run: |

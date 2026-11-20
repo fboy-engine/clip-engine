@@ -9,25 +9,24 @@ from . import gemini
 
 
 def gemini_check():
-    """ONE real Gemini call. Prints model name and a short reply, never the key."""
+    """Probe the top flash models once each. Never prints the key."""
     key = os.environ.get("GEMINI_API_KEY")
     if not key:
         print("FAIL: GEMINI_API_KEY is not set in this environment")
         return 1
     try:
-        model = gemini.resolve_model(key)
-        print(f"model resolved: {model}")
-        text = gemini.generate("Reply with exactly the single word: OK", key=key,
-                               retries=3, timeout=45)
-    except gemini.GeminiUnavailable as e:
-        print(f"FAIL: GeminiUnavailable: {e}")
+        ranked = gemini.rank_models(gemini.list_models(key))
+    except Exception as e:
+        print(f"FAIL: ListModels: {type(e).__name__}")
         return 1
-    except Exception as e:  # never let the key leak through a traceback
-        print(f"FAIL: {type(e).__name__}")
-        return 1
-    print(f"reply: {text.strip()[:40]!r}")
-    print("PASS")
-    return 0
+    print("candidates: " + (", ".join(ranked[:4]) or "none"))
+    ok_any = False
+    for m in ranked[:3] + ["gemini-flash-latest"]:
+        ok, detail, secs = gemini.probe(key, m, timeout=30)
+        print(f"{'OK  ' if ok else 'FAIL'} {m}: {detail} ({secs:.1f}s)")
+        ok_any = ok_any or ok
+    print("PASS" if ok_any else "FAIL")
+    return 0 if ok_any else 1
 
 
 COMMANDS = {"gemini-check": gemini_check}

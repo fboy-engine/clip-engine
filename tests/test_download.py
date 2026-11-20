@@ -64,6 +64,13 @@ class T(unittest.TestCase):
                                 runner=runner)
             self.assertEqual(len(calls), 3)
 
+    def test_cut_is_stream_copy_not_reencode(self):
+        with tempfile.TemporaryDirectory() as d:
+            runner, calls = self._fake(0)
+            dl.fetch_window("u", 600, 660, d, runner=runner)
+            self.assertNotIn("--force-keyframes-at-cuts", calls[0])
+            self.assertIn("*600-660", calls[0])
+
 
 if __name__ == "__main__":
     unittest.main()

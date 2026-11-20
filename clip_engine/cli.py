@@ -53,9 +53,7 @@ def cmd_info(a):
 
 
 def cmd_fetch(a):
-    if a.live:
-        print("FAIL: live mode is not built yet (ended streams first)")
-        return 2
+    # live streams use the same path: the section is cut from the DVR window
     if not a.end > a.start >= 0:
         print("FAIL: need end_sec > start_sec >= 0")
         return 2
@@ -66,6 +64,9 @@ def cmd_fetch(a):
         print(f"FAIL: {e}")
         return 1
     summary = download.probe_media(path)
+    if summary["vcodec"] in ("mpeg2video", "mpeg1video"):
+        print("FAIL: source was re-encoded to " + summary["vcodec"] + ", refusing to continue")
+        return 1
     summary["player_client"] = client or "default"
     summary["via_proxy"] = bool(proxy)
     with open(os.path.join(a.out, "probe.json"), "w") as f:

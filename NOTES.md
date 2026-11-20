@@ -41,6 +41,9 @@ First real transcription run died at "Install tools" with only "timed out after 
 ## YouTube bot check on anonymous WARP (run 44814362584, 2026-11-21)
 Install + WARP passed (run 2), then `cli info` failed: "Sign in to confirm you're not a bot" (default player client, WARP egress, no cookies). The earlier anonymous success (run 44807660941) used the same path, so this looks like a per-IP/per-time block, not a code bug. `info` is metadata only and tries ONE client, while `fetch` tries up to 3 (default, tv, mweb), so the info step is now continue-on-error and the download decides. If the download also gets the bot check, the options are: re-export YT_COOKIES (risks that account on datacenter IPs), or a different stream/IP; that is the user's call.
 
-## apt ffmpeg is too slow on this runner (run 45015009818 -> real id 44815009818, 2026-11-21)
+## apt ffmpeg is too slow on this runner (run 44815009818, 2026-11-21)
 With timestamps the install stall finally has a cause: `apt-get update` takes ~8 s, but `apt-get install ffmpeg` on the Ubuntu 26.04 image downloads ~150 MB from azure.archive.ubuntu.com in bursts (9-14 MB packages took 30-45 s each) and hit the 240 s cap (exit 124 at libavfilter11, package 63 of ~100). That also explains the earlier silent 6-9 min hangs. Fix: static ffmpeg+ffprobe (BtbN GPL build, GitHub releases) cached with actions/cache (`~/ffmpeg-bin`, key ffmpeg-btbn-linux64-gpl-v1); step prints both versions. The GPL build has libx264, which render_clip needs.
+
+## Run 44816094672 (2026-11-21): download PASSED, transcription broke on PyAV
+Anonymous WARP download worked this time (bot check was transient): 1920x1080, 60 fps, h264, 245 s, 85.2 MB, default client. Static ffmpeg: 159 MB in ~1 s, install step ~6 s. Then `faster_whisper.decode_audio` died on both models with `TypeError: open() got an unexpected keyword argument 'metadata_errors'` (PyAV/faster-whisper 1.2.1 mismatch on the runner). Fix: decode with our own ffmpeg to f32le PCM (`pcm_cmd`/`decode_pcm`), no PyAV. Also cached the downloaded window (key = sha1 of url|start|end) so re-runs skip YouTube; the cache is only saved by a successful job.
 

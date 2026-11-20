@@ -35,13 +35,31 @@ def dir_size_mb(path):
     return total / 1e6
 
 
-def slice_audio(audio, start=0.0, end=None, max_sec=None, sr=SR):
-    """Window [start, end) in seconds, optionally capped to max_sec long."""
-    s = max(0, int(start * sr))
-    e = len(audio) if not end else min(len(audio), int(end * sr))
+def pcm_cmd(media, start=0.0, end=None, max_sec=None, sr=SR):
+    """ffmpeg command: window of `media` as mono 16 kHz float32 PCM on stdout.
+    Decoding with ffmpeg instead of faster_whisper.decode_audio (PyAV) because
+    PyAV raised "open() got an unexpected keyword argument 'metadata_errors'"
+    on the runner (run 44816094672)."""
+    dur = (end - start) if end else None
     if max_sec:
-        e = min(e, s + int(max_sec * sr))
-    return audio[s:e]
+        dur = min(dur, max_sec) if dur else max_sec
+    cmd = ["ffmpeg", "-v", "error", "-nostdin"]
+    if start:
+        cmd += ["-ss", f"{start:g}"]
+    cmd += ["-i", media]
+    if dur:
+        cmd += ["-t", f"{dur:g}"]
+    return cmd + ["-vn", "-ac", "1", "-ar", str(sr), "-f", "f32le", "-"]
+
+
+def decode_pcm(media, start=0.0, end=None, max_sec=None, sr=SR):
+    import subprocess
+
+    import numpy as np
+    p = subprocess.run(pcm_cmd(media, start, end, max_sec, sr), capture_output=True)
+    if p.returncode != 0:
+        raise RuntimeError("ffmpeg decode failed: " + p.stderr.decode(errors="replace")[-300:])
+    return np.frombuffer(p.stdout, dtype=np.float32)
 
 
 def collect(segments):
@@ -78,7 +96,7 @@ def transcribe_audio(model, audio, language=None, beam=1):
 def run(media, model_name, start=0.0, end=None, max_sec=None, language=None, beam=1,
         cache_dir=DEFAULT_CACHE, out_dir="out", compute_type="int8"):
     import faster_whisper
-    from faster_whisper import WhisperModel, decode_audio
+    from faster_whisper import WhisperModel
     from faster_whisper.utils import download_model
 
     os.makedirs(out_dir, exist_ok=True)
@@ -87,10 +105,8 @@ def run(media, model_name, start=0.0, end=None, max_sec=None, language=None, bea
          "cpu_count": os.cpu_count(), "beam": beam,
          "faster_whisper": getattr(faster_whisper, "__version__", "?")}
     t = time.monotonic()
-    audio = decode_audio(media, sampling_rate=SR)
+    audio = decode_pcm(media, start, end, max_sec)
     m["decode_sec"] = round(time.monotonic() - t, 2)
-    m["file_audio_sec"] = round(len(audio) / SR, 1)
-    audio = slice_audio(audio, start, end, max_sec)
     m["audio_sec"] = round(len(audio) / SR, 1)
 
     t = time.monotonic()

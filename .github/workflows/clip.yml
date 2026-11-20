@@ -104,7 +104,23 @@ jobs:
         env:
           URL: ${{ inputs.url }}
         run: python -m clip_engine.cli info "$URL"
+      - name: Source cache key
+        id: sk
+        env:
+          URL: ${{ inputs.url }}
+          START: ${{ inputs.start_sec }}
+          END: ${{ inputs.end_sec }}
+        run: echo "key=src-$(printf '%s|%s|%s' "$URL" "$START" "$END" | sha1sum | cut -c1-16)-v1" >> "$GITHUB_OUTPUT"
+      - name: Cache downloaded window (re-runs on the same window skip YouTube)
+        id: srcc
+        uses: actions/cache@v4
+        with:
+          path: |
+            out/source.mp4
+            out/probe.json
+          key: ${{ steps.sk.outputs.key }}
       - name: Download window
+        if: ${{ steps.srcc.outputs.cache-hit != 'true' }}
         timeout-minutes: 15
         env:
           URL: ${{ inputs.url }}

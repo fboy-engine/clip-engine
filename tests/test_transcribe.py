@@ -20,11 +20,19 @@ class FakeModel:
 
 
 class T(unittest.TestCase):
-    def test_slice_window_and_cap(self):
-        a = list(range(100))
-        self.assertEqual(len(tr.slice_audio(a, 1, 3, sr=10)), 20)
-        self.assertEqual(len(tr.slice_audio(a, 1, None, max_sec=2, sr=10)), 20)
-        self.assertEqual(len(tr.slice_audio(a, 0, 999, sr=10)), 100)
+    def test_pcm_cmd_window_and_cap(self):
+        c = tr.pcm_cmd("a.mp4", 10, 70, max_sec=20)
+        self.assertEqual(c[c.index("-ss") + 1], "10")
+        self.assertEqual(c[c.index("-t") + 1], "20")
+        self.assertEqual(c[c.index("-ar") + 1], "16000")
+        self.assertEqual(c[c.index("-ac") + 1], "1")
+        self.assertIn("f32le", c)
+        self.assertEqual(c[-1], "-")
+        whole = tr.pcm_cmd("a.mp4")
+        self.assertNotIn("-ss", whole)
+        self.assertNotIn("-t", whole)
+        c2 = tr.pcm_cmd("a.mp4", 5, 65)
+        self.assertEqual(c2[c2.index("-t") + 1], "60")
 
     def test_collect_words_shape_feeds_captions(self):
         segs, info = tr.transcribe_audio(FakeModel(), [0.0], language="en")

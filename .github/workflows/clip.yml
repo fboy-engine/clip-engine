@@ -29,6 +29,10 @@ on:
         description: Route yt-dlp through Cloudflare WARP
         type: boolean
         default: true
+      cookies:
+        description: Send the YT_COOKIES secret (off = anonymous via WARP)
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -57,6 +61,7 @@ jobs:
         if: ${{ inputs.warp }}
         run: bash scripts/warp_up.sh
       - name: Cookies (secret to temp file, names only in logs)
+        if: ${{ inputs.cookies }}
         env:
           YT_COOKIES: ${{ secrets.YT_COOKIES }}
         run: |

@@ -1,0 +1,89 @@
+name: clip
+# Editing phase only: finds/downloads a window and builds ONE clip. Never posts.
+# Manual trigger only (no cron). Plain Python CLI underneath, so this file is
+# the only GitHub-specific part and can move to a self-hosted runner.
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: YouTube stream URL (ended stream first)
+        required: true
+      campaign:
+        description: Campaign label
+        default: test
+      start_sec:
+        description: Window start (seconds)
+        default: "0"
+      end_sec:
+        description: Window end (seconds); 0 = auto-find
+        default: "0"
+      live:
+        description: Stream is live (clip from the DVR window)
+        type: boolean
+        default: false
+      dry_run:
+        description: Never post anywhere (always true for now)
+        type: boolean
+        default: true
+      warp:
+        description: Route yt-dlp through Cloudflare WARP
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: clip-engine-run
+  cancel-in-progress: false
+jobs:
+  clip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tools (latest yt-dlp, JS runtime, ffmpeg)
+        run: |
+          command -v ffmpeg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg; }
+          pip install -q -U "yt-dlp[default]"
+          echo "yt-dlp $(yt-dlp --version) | node $(node --version) | $(ffmpeg -version | head -n1)"
+      - name: Dry-run guard
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          [ "$DRY_RUN" = "true" ] || echo "note: posting is not built; running as dry run anyway"
+      - name: WARP (egress check fails the job if IP did not change)
+        if: ${{ inputs.warp }}
+        run: bash scripts/warp_up.sh
+      - name: Cookies (secret to temp file, names only in logs)
+        env:
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+        run: |
+          umask 077
+          printf '%s\n' "$YT_COOKIES" > "$RUNNER_TEMP/yt_cookies.txt"
+          echo "YT_COOKIES_FILE=$RUNNER_TEMP/yt_cookies.txt" >> "$GITHUB_ENV"
+          echo "cookie file lines: $(grep -vc '^#' "$RUNNER_TEMP/yt_cookies.txt" || true), youtube/google lines: $(grep -cE 'youtube|google' "$RUNNER_TEMP/yt_cookies.txt" || true)"
+      - name: Stream info
+        env:
+          URL: ${{ inputs.url }}
+        run: python -m clip_engine.cli info "$URL"
+      - name: Download window
+        env:
+          URL: ${{ inputs.url }}
+          START: ${{ inputs.start_sec }}
+          END: ${{ inputs.end_sec }}
+          LIVE: ${{ inputs.live }}
+        run: |
+          FLAGS=""; [ "$LIVE" = "true" ] && FLAGS="--live"
+          python -m clip_engine.cli fetch "$URL" --start "$START" --end "$END" --out out $FLAGS
+      - name: Upload download check (metadata only, no video)
+        uses: actions/upload-artifact@v4
+        with:
+          name: dl-check-${{ github.run_id }}
+          path: out/probe.json
+      - name: Cleanup secrets
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/yt_cookies.txt"
+          rm -rf "$RUNNER_TEMP/warp"

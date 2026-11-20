@@ -2,13 +2,15 @@
 
 Usage: python -m clip_engine.cli <command> [args]
 """
+import argparse
+import json
 import os
 import sys
 
-from . import gemini
+from . import download, gemini
 
 
-def gemini_check():
+def gemini_check(_a):
     """Probe the top flash models once each. Never prints the key."""
     key = os.environ.get("GEMINI_API_KEY")
     if not key:
@@ -30,15 +32,60 @@ def gemini_check():
     return 0 if ok_any else 1
 
 
-COMMANDS = {"gemini-check": gemini_check}
+def _env():
+    return os.environ.get("YT_COOKIES_FILE"), os.environ.get("YT_PROXY")
+
+
+def cmd_info(a):
+    cookies, proxy = _env()
+    safe, err = download.info(a.url, cookies, proxy)
+    if err.strip():
+        print(err.strip()[-1500:])
+    if safe is None:
+        print("FAIL: yt-dlp could not read the stream")
+        return 1
+    print(json.dumps(safe, indent=1))
+    return 0
+
+
+def cmd_fetch(a):
+    if a.live:
+        print("FAIL: live mode is not built yet (ended streams first)")
+        return 2
+    if not a.end > a.start >= 0:
+        print("FAIL: need end_sec > start_sec >= 0")
+        return 2
+    cookies, proxy = _env()
+    try:
+        path, client = download.fetch_window(a.url, a.start, a.end, a.out, cookies, proxy)
+    except download.DownloadFailed as e:
+        print(f"FAIL: {e}")
+        return 1
+    summary = download.probe_media(path)
+    summary["player_client"] = client or "default"
+    summary["via_proxy"] = bool(proxy)
+    with open(os.path.join(a.out, "probe.json"), "w") as f:
+        json.dump(summary, f, indent=1)
+    print("PASS download: " + json.dumps(summary))
+    return 0
 
 
 def main(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or argv[0] not in COMMANDS:
-        print("commands: " + ", ".join(COMMANDS))
-        return 2
-    return COMMANDS[argv[0]]()
+    p = argparse.ArgumentParser(prog="clip_engine")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("gemini-check").set_defaults(fn=gemini_check)
+    i = sub.add_parser("info")
+    i.add_argument("url")
+    i.set_defaults(fn=cmd_info)
+    f = sub.add_parser("fetch")
+    f.add_argument("url")
+    f.add_argument("--start", type=float, required=True)
+    f.add_argument("--end", type=float, required=True)
+    f.add_argument("--out", default="out")
+    f.add_argument("--live", action="store_true")
+    f.set_defaults(fn=cmd_fetch)
+    a = p.parse_args(argv)
+    return a.fn(a)
 
 
 if __name__ == "__main__":

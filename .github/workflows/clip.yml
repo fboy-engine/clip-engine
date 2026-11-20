@@ -85,25 +85,6 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           [ "$DRY_RUN" = "true" ] || echo "note: posting is not built; running as dry run anyway"
-      - name: WARP (egress check fails the job if IP did not change)
-        if: ${{ inputs.warp }}
-        timeout-minutes: 4
-        run: bash scripts/warp_up.sh
-      - name: Cookies (secret to temp file, names only in logs)
-        if: ${{ inputs.cookies }}
-        env:
-          YT_COOKIES: ${{ secrets.YT_COOKIES }}
-        run: |
-          umask 077
-          printf '%s\n' "$YT_COOKIES" > "$RUNNER_TEMP/yt_cookies.txt"
-          echo "YT_COOKIES_FILE=$RUNNER_TEMP/yt_cookies.txt" >> "$GITHUB_ENV"
-          echo "cookie file lines: $(grep -vc '^#' "$RUNNER_TEMP/yt_cookies.txt" || true), youtube/google lines: $(grep -cE 'youtube|google' "$RUNNER_TEMP/yt_cookies.txt" || true)"
-      - name: Stream info (metadata only; non-fatal, the download has its own client fallback)
-        continue-on-error: true
-        timeout-minutes: 4
-        env:
-          URL: ${{ inputs.url }}
-        run: python -m clip_engine.cli info "$URL"
       - name: Source cache key
         id: sk
         env:
@@ -113,12 +94,32 @@ jobs:
         run: echo "key=src-$(printf '%s|%s|%s' "$URL" "$START" "$END" | sha1sum | cut -c1-16)-v1" >> "$GITHUB_OUTPUT"
       - name: Cache downloaded window (re-runs on the same window skip YouTube)
         id: srcc
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             out/source.mp4
             out/probe.json
           key: ${{ steps.sk.outputs.key }}
+      - name: WARP (egress check fails the job if IP did not change)
+        if: ${{ inputs.warp && steps.srcc.outputs.cache-hit != 'true' }}
+        timeout-minutes: 4
+        run: bash scripts/warp_up.sh
+      - name: Cookies (secret to temp file, names only in logs)
+        if: ${{ inputs.cookies && steps.srcc.outputs.cache-hit != 'true' }}
+        env:
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+        run: |
+          umask 077
+          printf '%s\n' "$YT_COOKIES" > "$RUNNER_TEMP/yt_cookies.txt"
+          echo "YT_COOKIES_FILE=$RUNNER_TEMP/yt_cookies.txt" >> "$GITHUB_ENV"
+          echo "cookie file lines: $(grep -vc '^#' "$RUNNER_TEMP/yt_cookies.txt" || true), youtube/google lines: $(grep -cE 'youtube|google' "$RUNNER_TEMP/yt_cookies.txt" || true)"
+      - name: Stream info (metadata only; non-fatal, the download has its own client fallback)
+        if: ${{ steps.srcc.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        timeout-minutes: 4
+        env:
+          URL: ${{ inputs.url }}
+        run: python -m clip_engine.cli info "$URL"
       - name: Download window
         if: ${{ steps.srcc.outputs.cache-hit != 'true' }}
         timeout-minutes: 15
@@ -130,6 +131,14 @@ jobs:
         run: |
           FLAGS=""; [ "$LIVE" = "true" ] && FLAGS="--live"
           python -m clip_engine.cli fetch "$URL" --start "$START" --end "$END" --out out $FLAGS
+      - name: Save downloaded window to cache now (do not wait for the whole job to pass)
+        if: ${{ steps.srcc.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            out/source.mp4
+            out/probe.json
+          key: ${{ steps.sk.outputs.key }}
       - name: Upload download check (metadata only, no video)
         uses: actions/upload-artifact@v4
         with:

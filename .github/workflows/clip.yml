@@ -103,6 +103,8 @@ jobs:
       - name: WARP (egress check fails the job if IP did not change)
         if: ${{ inputs.warp && steps.srcc.outputs.cache-hit != 'true' }}
         timeout-minutes: 4
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/warp_up.sh
       - name: Cookies (secret to temp file, names only in logs)
         if: ${{ inputs.cookies && steps.srcc.outputs.cache-hit != 'true' }}

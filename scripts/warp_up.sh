@@ -9,15 +9,10 @@ mkdir -p "$WORK"
 cd "$WORK"
 PORT=8080
 
-auth=()
-[ -n "${GITHUB_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GITHUB_TOKEN")
-
-fetch_release() { # repo glob out
-  local url
-  url=$(curl -fsSL "${auth[@]}" "https://api.github.com/repos/$1/releases/latest" |
-    python3 -c "import json,sys,fnmatch; d=json.load(sys.stdin); print(next(a['browser_download_url'] for a in d['assets'] if fnmatch.fnmatch(a['name'], sys.argv[1])))" "$2")
-  curl -fsSL "$url" -o "$3"
-}
+WGCF_VERSION="${WGCF_VERSION:-2.3.1}"
+WIREPROXY_VERSION="${WIREPROXY_VERSION:-1.1.3}"
+# Pinned versions, direct release URLs: never calls the (rate-limited) releases API.
+fetch_url() { curl -fsSL --retry 3 --retry-delay 3 --connect-timeout 15 "$1" -o "$2"; }
 
 trace_ip() { # optional curl proxy args
   curl -fsS -m 20 "$@" https://www.cloudflare.com/cdn-cgi/trace
@@ -26,8 +21,8 @@ trace_ip() { # optional curl proxy args
 direct_trace=$(trace_ip)
 direct_ip=$(echo "$direct_trace" | sed -n 's/^ip=//p')
 
-fetch_release ViRb3/wgcf '*linux_amd64' wgcf
-fetch_release pufferffish/wireproxy 'wireproxy_linux_amd64.tar.gz' wp.tgz
+fetch_url "https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VERSION}/wgcf_${WGCF_VERSION}_linux_amd64" wgcf
+fetch_url "https://github.com/pufferffish/wireproxy/releases/download/v${WIREPROXY_VERSION}/wireproxy_linux_amd64.tar.gz" wp.tgz
 chmod +x wgcf
 tar xzf wp.tgz wireproxy
 

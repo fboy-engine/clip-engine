@@ -10,13 +10,22 @@ import os
 import re
 import subprocess
 import threading
+import time
 
 MAX_ATTEMPTS = 3            # never a retry storm
 DEFAULT_CLIENTS = (None, "tv", "mweb")
 
 
+BOT_RE = re.compile(r"confirm you.?re not a bot", re.I)
+BACKOFF_SEC = 30            # wait before the ONE retry after a bot check
+
+
 class DownloadFailed(Exception):
     pass
+
+
+class BotCheck(DownloadFailed):
+    """YouTube asked for a sign-in twice in a row. Stop; more retries only burn the IP."""
 
 
 _RULES = [
@@ -51,15 +60,18 @@ def common_args(cookies=None, proxy=None, client=None):
 
 
 def run_stream(cmd, timeout=1200):
-    """Run, print redacted output line by line, return the exit code."""
+    """Run, print redacted output line by line. Returns (exit code, redacted tail of the output)."""
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          text=True, errors="replace")
     timer = threading.Timer(timeout, p.kill)
     timer.start()
+    tail = []
     try:
         for line in p.stdout:
-            print(redact(line.rstrip()), flush=True)
-        return p.wait()
+            line = redact(line.rstrip())
+            print(line, flush=True)
+            tail = (tail + [line])[-40:]
+        return p.wait(), "\n".join(tail)
     finally:
         timer.cancel()
 
@@ -80,14 +92,17 @@ def info(url, cookies=None, proxy=None, client=None):
 
 
 def fetch_window(url, start, end, out_dir, cookies=None, proxy=None,
-                 clients=DEFAULT_CLIENTS, runner=run_stream):
+                 clients=DEFAULT_CLIENTS, runner=run_stream, sleep=time.sleep, backoff=BACKOFF_SEC):
     """Download only [start, end] seconds of a stream (ended, or the DVR window of a
     live one) as mp4. Stream copy: NO --force-keyframes-at-cuts, which made yt-dlp
     re-encode the section to MPEG-2 (run 44807660941); cuts land on keyframes, so
     the file can run a few seconds longer than asked.
-    Returns (path, client_used). Tries at most MAX_ATTEMPTS player clients."""
+    Returns (path, client_used). Tries at most MAX_ATTEMPTS player clients, except on the
+    "Sign in to confirm you're not a bot" check: one backoff, ONE retry on the next client,
+    then BotCheck (stop and report; do not hammer YouTube)."""
     os.makedirs(out_dir, exist_ok=True)
     last = None
+    bot_hits = 0
     for client in list(clients)[:MAX_ATTEMPTS]:
         cmd = common_args(cookies, proxy, client) + [
             "-S", "res:1440,fps", "-f", "bv*+ba/b",
@@ -95,11 +110,21 @@ def fetch_window(url, start, end, out_dir, cookies=None, proxy=None,
             "--merge-output-format", "mp4", "--concurrent-fragments", "4",
             "--progress-delta", "15", "--newline",
             "-o", os.path.join(out_dir, "source.%(ext)s"), url]
-        rc = runner(cmd, 1200)
+        res = runner(cmd, 1200)
+        rc, text = res if isinstance(res, tuple) else (res, "")
         files = sorted(glob.glob(os.path.join(out_dir, "source.mp4")))
         if rc == 0 and files:
             return files[0], client
         last = rc
+        if BOT_RE.search(text or ""):
+            bot_hits += 1
+            if bot_hits >= 2:
+                raise BotCheck("YouTube bot check twice (client=" + (client or "default") + "); stopping. "
+                               "Refresh the YT_COOKIES secret from the throwaway account and run with "
+                               "cookies=true, or try later / another stream")
+            print(f"bot check with client={client or 'default'}; one retry after {backoff}s", flush=True)
+            sleep(backoff)
+            continue
         print(f"download attempt with client={client or 'default'} failed (rc={last})", flush=True)
     raise DownloadFailed(f"yt-dlp failed after {MAX_ATTEMPTS} attempts (last rc={last})")
 

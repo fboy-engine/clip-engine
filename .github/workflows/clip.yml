@@ -134,9 +134,18 @@ jobs:
           YT_COOKIES: ${{ secrets.YT_COOKIES }}
         run: |
           umask 077
+          if [ -z "$YT_COOKIES" ]; then
+            echo "YT_COOKIES secret is empty: add cookies from the throwaway Google account, or run with cookies=false"
+            exit 1
+          fi
           printf '%s\n' "$YT_COOKIES" > "$RUNNER_TEMP/yt_cookies.txt"
+          YT=$(grep -cE 'youtube|google' "$RUNNER_TEMP/yt_cookies.txt" || true)
+          echo "cookie file lines: $(grep -vc '^#' "$RUNNER_TEMP/yt_cookies.txt" || true), youtube/google lines: $YT"
+          if [ "$YT" -eq 0 ]; then
+            echo "YT_COOKIES has no youtube/google lines (wrong export or stale); refresh it from the throwaway account"
+            exit 1
+          fi
           echo "YT_COOKIES_FILE=$RUNNER_TEMP/yt_cookies.txt" >> "$GITHUB_ENV"
-          echo "cookie file lines: $(grep -vc '^#' "$RUNNER_TEMP/yt_cookies.txt" || true), youtube/google lines: $(grep -cE 'youtube|google' "$RUNNER_TEMP/yt_cookies.txt" || true)"
       - name: Stream info (metadata only; non-fatal, the download has its own client fallback)
         if: ${{ steps.srcc.outputs.cache-hit != 'true' }}
         continue-on-error: true

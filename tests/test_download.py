@@ -72,5 +72,45 @@ class T(unittest.TestCase):
             self.assertIn("*600-660", calls[0])
 
 
+class BotCheckTests(unittest.TestCase):
+    BOT = (1, "ERROR: [youtube] x: Sign in to confirm you\u2019re not a bot")
+
+    def _runner(self, script):
+        calls = []
+
+        def runner(cmd, timeout):
+            calls.append(cmd)
+            r = script[len(calls) - 1]
+            if r == "ok":
+                open(cmd[cmd.index("-o") + 1].replace("%(ext)s", "mp4"), "w").write("x")
+                return 0, ""
+            return r
+        return runner, calls
+
+    def test_one_backoff_retry_then_stop(self):
+        slept = []
+        with tempfile.TemporaryDirectory() as d:
+            runner, calls = self._runner([self.BOT, self.BOT, "ok"])
+            with self.assertRaises(dl.BotCheck):
+                dl.fetch_window("u", 1, 9, d, runner=runner, sleep=slept.append, backoff=7)
+            self.assertEqual(len(calls), 2)       # never a third attempt
+            self.assertEqual(slept, [7])          # exactly one backoff
+
+    def test_retry_after_bot_check_can_succeed(self):
+        with tempfile.TemporaryDirectory() as d:
+            runner, calls = self._runner([self.BOT, "ok"])
+            path, client = dl.fetch_window("u", 1, 9, d, runner=runner, sleep=lambda s: None)
+            self.assertEqual(client, "tv")
+            self.assertEqual(len(calls), 2)
+
+    def test_other_errors_keep_the_client_fallback(self):
+        with tempfile.TemporaryDirectory() as d:
+            runner, calls = self._runner([(1, "HTTP 403"), (1, "HTTP 403"), (1, "HTTP 403")])
+            with self.assertRaises(dl.DownloadFailed) as cm:
+                dl.fetch_window("u", 1, 9, d, runner=runner, sleep=lambda s: None)
+            self.assertNotIsInstance(cm.exception, dl.BotCheck)
+            self.assertEqual(len(calls), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

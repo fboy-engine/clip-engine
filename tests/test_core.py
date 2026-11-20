@@ -32,7 +32,7 @@ class T(unittest.TestCase):
             raise TimeoutError()
         with self.assertRaises(gemini.GeminiUnavailable):
             gemini.generate("hi", key="k", retries=3, opener=op, sleep=lambda s: None)
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), gemini.MAX_CALLS)  # total cap, not retries x chain
 
     def test_retry_then_success(self):
         n = {"i": 0}

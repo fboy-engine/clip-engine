@@ -19,6 +19,7 @@ PREFERENCE = [r"gemini-(\d+(?:\.\d+)?)-flash$", r"gemini-(\d+(?:\.\d+)?)-flash-l
 MAX_MODELS = 5
 ALIASES = ["gemini-flash-latest", "gemini-flash-lite-latest"]
 DEADLINE = 75  # seconds for the whole generate() call
+MAX_CALLS = 4  # total generateContent calls per generate(), across the whole chain
 RETRY_CODES = (429, 500, 502, 503, 504)
 
 
@@ -92,10 +93,12 @@ def resolve_model(key, opener=_http):
 
 
 def generate(prompt, key=None, retries=2, timeout=25, opener=_http, sleep=time.sleep,
-             max_chars=6000, max_models=MAX_MODELS, deadline=DEADLINE, clock=time.monotonic):
+             max_chars=6000, max_models=MAX_MODELS, deadline=DEADLINE, clock=time.monotonic,
+             max_calls=MAX_CALLS):
     """Short prompt in, text out. Fails fast: each model gets `retries` tries
     (429/5xx/timeouts, short backoff), then the next candidate. A whole-call
-    deadline stops long chains. Auth/bad-request errors stop at once."""
+    deadline and a total call cap (`max_calls`) stop long chains.
+    Auth/bad-request errors stop at once."""
     key = key or os.environ.get("GEMINI_API_KEY")
     if not key:
         raise GeminiUnavailable("GEMINI_API_KEY not set")
@@ -110,6 +113,7 @@ def generate(prompt, key=None, retries=2, timeout=25, opener=_http, sleep=time.s
         raise GeminiUnavailable("no usable flash model in ListModels")
     body = {"contents": [{"parts": [{"text": prompt}]}]}
     notes = []
+    calls = 0
     for model in models:
         last = None
         for i in range(retries):
@@ -117,6 +121,10 @@ def generate(prompt, key=None, retries=2, timeout=25, opener=_http, sleep=time.s
             if left <= 1:
                 notes.append(f"{model}: deadline")
                 raise GeminiUnavailable("; ".join(notes))
+            if calls >= max_calls:
+                notes.append(f"{model}: call cap {max_calls}")
+                raise GeminiUnavailable("; ".join(notes))
+            calls += 1
             try:
                 data = opener(f"{BASE}/models/{model}:generateContent?key={key}", body,
                               min(timeout, left))

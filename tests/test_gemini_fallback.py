@@ -66,6 +66,20 @@ class T(unittest.TestCase):
         self.assertEqual(out, "ok")
         self.assertEqual(used, ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-flash-latest"])
 
+    def test_total_call_cap_stops_the_chain(self):
+        calls = []
+
+        def op(url, body=None, timeout=0):
+            if "/models?" in url:
+                return LIST2
+            calls.append(1)
+            raise urllib.error.HTTPError(url, 503, "busy", {}, None)
+        with self.assertRaises(gemini.GeminiUnavailable) as cm:
+            gemini.generate("hi", key="k", retries=2, opener=op, sleep=lambda s: None,
+                            max_calls=3)
+        self.assertEqual(len(calls), 3)
+        self.assertIn("call cap", str(cm.exception))
+
     def test_deadline_stops_the_chain(self):
         t = [0.0]
 

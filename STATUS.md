@@ -2,6 +2,9 @@
 
 _Last updated 2026-11-21. No finished clip has been produced yet._
 
+## CI
+- unit-tests: fixed in the cap commit (total Gemini call cap, MAX_CALLS=4). See NOTES.md. Confirm green on GitHub after each push.
+
 ## Verified on real services
 - Gemini: one real call passed (run 44805153126). `gemini-3.6-flash` answered in 6.8 s; 3.8 and 3.7 stalled 20 s each. Chain + 75 s deadline in `gemini.py`. See NOTES.md.
 - WARP: egress check passes (runner datacenter IP -> Cloudflare WARP, `warp=on loc=US`).

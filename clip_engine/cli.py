@@ -14,6 +14,7 @@ def gemini_check():
     if not key:
         print("FAIL: GEMINI_API_KEY is not set in this environment")
         return 1
+    timeout = int(os.environ.get("GEMINI_PROBE_TIMEOUT", "30"))
     try:
         ranked = gemini.rank_models(gemini.list_models(key))
     except Exception as e:
@@ -21,8 +22,8 @@ def gemini_check():
         return 1
     print("candidates: " + (", ".join(ranked[:4]) or "none"))
     ok_any = False
-    for m in ranked[:3] + ["gemini-flash-latest"]:
-        ok, detail, secs = gemini.probe(key, m, timeout=30)
+    for m in ranked[:2] + ["gemini-flash-latest"]:
+        ok, detail, secs = gemini.probe(key, m, timeout=timeout)
         print(f"{'OK  ' if ok else 'FAIL'} {m}: {detail} ({secs:.1f}s)")
         ok_any = ok_any or ok
     print("PASS" if ok_any else "FAIL")

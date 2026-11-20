@@ -51,6 +51,34 @@ class T(unittest.TestCase):
         self.assertEqual(detail, "TimeoutError")
         self.assertNotIn("SECRETKEY", detail)
 
+    def test_503_moves_on_and_aliases_are_last_resort(self):
+        used = []
+
+        def op(url, body=None, timeout=0):
+            if "/models?" in url:
+                return LIST2
+            m = url.split("/models/")[1].split(":")[0]
+            used.append(m)
+            if m != "gemini-flash-latest":
+                raise urllib.error.HTTPError(url, 503, "busy", {}, None)
+            return OK
+        out = gemini.generate("hi", key="k", retries=1, opener=op, sleep=lambda s: None)
+        self.assertEqual(out, "ok")
+        self.assertEqual(used, ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-flash-latest"])
+
+    def test_deadline_stops_the_chain(self):
+        t = [0.0]
+
+        def op(url, body=None, timeout=0):
+            if "/models?" in url:
+                return LIST2
+            t[0] += 40
+            raise TimeoutError()
+        with self.assertRaises(gemini.GeminiUnavailable) as cm:
+            gemini.generate("hi", key="k", retries=2, opener=op, sleep=lambda s: None,
+                            deadline=75, clock=lambda: t[0])
+        self.assertIn("deadline", str(cm.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,8 +1,9 @@
-"""Gemini client: runtime model discovery, retries with backoff, model fallback.
+"""Gemini client: runtime model discovery, fail-fast retries, model fallback.
 
 The old 404 came from a hardcoded model name Google retired, so we never trust
 a constant: GEMINI_MODEL env wins, else ListModels and take the newest flash
-models. A model that stalls (ReadTimeout) is skipped for the next candidate.
+models. 503 "high demand" and stalls are per-model, so each model gets few
+tries and then the next candidate is used; -latest aliases are last resorts.
 Callers must treat GeminiUnavailable as "use the local fallback".
 The URL contains the key, so it is never printed or put in an exception.
 """
@@ -15,7 +16,9 @@ import urllib.request
 
 BASE = "https://generativelanguage.googleapis.com/v1beta"
 PREFERENCE = [r"gemini-(\d+(?:\.\d+)?)-flash$", r"gemini-(\d+(?:\.\d+)?)-flash-lite$"]
-MAX_MODELS = 3
+MAX_MODELS = 5
+ALIASES = ["gemini-flash-latest", "gemini-flash-lite-latest"]
+DEADLINE = 75  # seconds for the whole generate() call
 RETRY_CODES = (429, 500, 502, 503, 504)
 
 
@@ -44,6 +47,16 @@ def pick_model(model_names):
     """Newest stable flash model from ListModels names, or None."""
     ranked = rank_models(model_names)
     return ranked[0] if ranked else None
+
+
+def candidates(model_names, max_models=MAX_MODELS):
+    """Ranked flash/flash-lite names, then the -latest aliases as last resorts.
+    A 503 'high demand' is per-model, so a longer, mixed chain gets through."""
+    out = rank_models(model_names)[:max_models]
+    for a in ALIASES:
+        if a not in out:
+            out.append(a)
+    return out
 
 
 def _http(url, body=None, timeout=60):
@@ -78,17 +91,19 @@ def resolve_model(key, opener=_http):
     return model
 
 
-def generate(prompt, key=None, retries=4, timeout=45, opener=_http, sleep=time.sleep,
-             max_chars=6000, max_models=MAX_MODELS):
-    """Short prompt in, text out. Retries 429/5xx/timeouts with backoff, then
-    moves to the next candidate model. Auth/bad-request errors stop at once."""
+def generate(prompt, key=None, retries=2, timeout=25, opener=_http, sleep=time.sleep,
+             max_chars=6000, max_models=MAX_MODELS, deadline=DEADLINE, clock=time.monotonic):
+    """Short prompt in, text out. Fails fast: each model gets `retries` tries
+    (429/5xx/timeouts, short backoff), then the next candidate. A whole-call
+    deadline stops long chains. Auth/bad-request errors stop at once."""
     key = key or os.environ.get("GEMINI_API_KEY")
     if not key:
         raise GeminiUnavailable("GEMINI_API_KEY not set")
     prompt = prompt[:max_chars]  # shorter inputs = fewer ReadTimeouts
+    t0 = clock()
     env = os.environ.get("GEMINI_MODEL")
     try:
-        models = [env] if env else rank_models(list_models(key, opener))[:max_models]
+        models = [env] if env else candidates(list_models(key, opener), max_models)
     except (urllib.error.URLError, OSError, ValueError, KeyError):
         raise GeminiUnavailable("ListModels failed")
     if not models:
@@ -98,8 +113,13 @@ def generate(prompt, key=None, retries=4, timeout=45, opener=_http, sleep=time.s
     for model in models:
         last = None
         for i in range(retries):
+            left = deadline - (clock() - t0)
+            if left <= 1:
+                notes.append(f"{model}: deadline")
+                raise GeminiUnavailable("; ".join(notes))
             try:
-                data = opener(f"{BASE}/models/{model}:generateContent?key={key}", body, timeout)
+                data = opener(f"{BASE}/models/{model}:generateContent?key={key}", body,
+                              min(timeout, left))
                 return data["candidates"][0]["content"]["parts"][0]["text"]
             except urllib.error.HTTPError as e:
                 last = _err_detail(e)
@@ -113,7 +133,7 @@ def generate(prompt, key=None, retries=4, timeout=45, opener=_http, sleep=time.s
                 last = "malformed response"
                 break
             if i < retries - 1:
-                sleep(min(2 ** i, 20))
+                sleep(min(2 ** i, 4))
         notes.append(f"{model}: {last}")
     raise GeminiUnavailable("; ".join(notes))
 

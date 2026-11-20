@@ -1,6 +1,6 @@
 name: gemini-check
-# Gemini diagnostics: per-model probe + raw curl timings. Manual only.
-# The key is only ever sent in a header or env var and is never printed.
+# One real Gemini call: walks the model chain until one answers. Manual only.
+# The key is only ever sent to Google and never printed.
 on:
   workflow_dispatch:
 permissions:
@@ -8,30 +8,14 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Per-model probe (python)
-        continue-on-error: true
+      - name: Gemini chain probe
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_PROBE_TIMEOUT: "15"
+          GEMINI_PROBE_TIMEOUT: "20"
         run: python -m clip_engine.cli gemini-check
-      - name: curl timings (GET vs POST, default vs ipv4)
-        if: always()
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          B='{"contents":[{"parts":[{"text":"Reply with exactly the single word: OK"}]}]}'
-          W='http=%{http_code} connect=%{time_connect}s ttfb=%{time_starttransfer}s total=%{time_total}s\n'
-          API=https://generativelanguage.googleapis.com/v1beta
-          echo "== GET models (ipv4)"
-          curl -4 -sS -m 30 -o /dev/null -w "$W" -H "x-goog-api-key: $GEMINI_API_KEY" "$API/models?pageSize=1" || true
-          for F in "" "-4"; do
-            echo "== POST generateContent flash-latest flags='$F'"
-            curl $F -sS -m 45 -o /tmp/r.json -w "$W" -H "Content-Type: application/json" -H "x-goog-api-key: $GEMINI_API_KEY" -d "$B" "$API/models/gemini-flash-latest:generateContent" || true
-            head -c 300 /tmp/r.json 2>/dev/null; echo
-          done

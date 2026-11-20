@@ -11,25 +11,29 @@ from . import download, gemini
 
 
 def gemini_check(_a):
-    """Probe the top flash models once each. Never prints the key."""
+    """Walk the candidate chain until ONE model answers. Never prints the key."""
     key = os.environ.get("GEMINI_API_KEY")
     if not key:
         print("FAIL: GEMINI_API_KEY is not set in this environment")
         return 1
-    timeout = int(os.environ.get("GEMINI_PROBE_TIMEOUT", "30"))
+    timeout = int(os.environ.get("GEMINI_PROBE_TIMEOUT", "20"))
     try:
-        ranked = gemini.rank_models(gemini.list_models(key))
+        names = gemini.list_models(key)
     except Exception as e:
         print(f"FAIL: ListModels: {type(e).__name__}")
         return 1
-    print("candidates: " + (", ".join(ranked[:4]) or "none"))
-    ok_any = False
-    for m in ranked[:2] + ["gemini-flash-latest"]:
+    flashy = sorted(n.split("/", 1)[-1] for n in names if "flash" in n)
+    print("flash-ish models: " + (", ".join(flashy) or "none"))
+    chain = gemini.candidates(names)
+    print("chain: " + ", ".join(chain))
+    for m in chain:
         ok, detail, secs = gemini.probe(key, m, timeout=timeout)
         print(f"{'OK  ' if ok else 'FAIL'} {m}: {detail} ({secs:.1f}s)")
-        ok_any = ok_any or ok
-    print("PASS" if ok_any else "FAIL")
-    return 0 if ok_any else 1
+        if ok:
+            print(f"PASS (use GEMINI_MODEL={m} to pin)")
+            return 0
+    print("FAIL: no model in the chain answered")
+    return 1
 
 
 def _env():

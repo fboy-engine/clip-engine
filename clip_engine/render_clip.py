@@ -409,14 +409,21 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
                           os.path.join(out_dir, "encode.log"), cbx)
     timings["render_sec"] = round(time.monotonic() - t, 1)
 
+    try:    # why no cam? written next to the clip; never changes the layout decision
+        diag = vision.cam_diag(media, s_f, dur, src_w, src_h, os.path.join(out_dir, "source_contact.jpg"))
+    except Exception as e:
+        diag = {"error": f"{type(e).__name__}: {str(e)[:160]}"}
+    with open(os.path.join(out_dir, "cam_diag.json"), "w") as f:
+        json.dump(diag, f, indent=1)
+
     r = {"source": {"width": src_w, "height": src_h, "fps": fps, "duration": pr["duration"]},
          "asked": {"start": start, "end": end}, "cut": {"start": s_f, "end": round(s_f + dur, 3), "duration": round(dur, 4), "frames": n},
          "expected": {"frames": n, "duration": round(dur, 4), "source_fps": fps}, "short_frames": short,
          "hook": {"text": hook, "source": hook_src, "match": hook_match}, "trim": trim_info, "words": len(cw), "asr": meta, "notes": notes,
          "word_spans": [[round(w["s"], 3), round(w["e"], 3)] for w in cw],
-         "crop_points": pts, "loudnorm_input": ln, "timings": timings,
+         "cam_diag": diag, "crop_points": pts, "loudnorm_input": ln, "timings": timings,
          "encode": {"codec": "libx264", "crf": config.CRF, "preset": preset},
-         "grade_inputs": {"audio_inputs": 1, "audio_filters": list(AUDIO_FILTERS), "trim": trim_info,
+         "grade_inputs": {"cam_diag": diag, "audio_inputs": 1, "audio_filters": list(AUDIO_FILTERS), "trim": trim_info,
                           "hook": {"text": hook, "source": hook_src, "match": hook_match}, **stats}}
     with open(os.path.join(out_dir, "render.json"), "w") as f:
         json.dump(r, f, indent=1)

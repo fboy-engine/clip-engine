@@ -274,6 +274,15 @@ def format_report(checks):
     return "\n".join(lines)
 
 
+def _tail(m):
+    spans = m.get("word_spans") or []
+    dur = (m.get("video") or {}).get("duration") or 0
+    why = ((m.get("render") or {}).get("trim") or {}).get("end_reason", "")
+    if not spans or not dur:
+        return "no word times"
+    return f"{dur - spans[-1][1]:.2f} s after the last word; {why}"
+
+
 def key_numbers(m):
     """The short block the run summary leads with."""
     v, L, b = m.get("video") or {}, m.get("loud") or {}, m.get("balance") or {}
@@ -290,5 +299,20 @@ def key_numbers(m):
             f"opening freeze check: {(m.get('opening') or {}).get('detail', 'not measured')} "
             f"({'ok' if (m.get('opening') or {}).get('ok') else 'FAIL/unmeasured'})",
             f"subject in frame: {o.get('inside_pct')}% of detected ({o.get('detected_pct')}% of {o.get('samples')} samples); "
-            f"render-time plan {((r.get('subject') or {}).get('inside_pct'))}%"]
+            f"render-time plan {((r.get('subject') or {}).get('inside_pct'))}%",
+            f"hook: \"{(r.get('hook') or {}).get('text')}\" ({(r.get('hook') or {}).get('source')}, "
+            f"matches first 3 s: {(r.get('hook') or {}).get('match')})",
+            f"ending: {_tail(m)}",
+            ]
+    dg = r.get("cam_diag") or {}
+    if dg.get("corners"):
+        rows.append("cam diagnostics (frames with a face, strict/relaxed of %s): " % dg.get("frames")
+                    + "; ".join(f"{c} {v['strict']}/{v['relaxed']} (max face {v['max_face_px']} px)"
+                                for c, v in dg["corners"].items()))
+    elif dg.get("error"):
+        rows.append("cam diagnostics failed: " + str(dg["error"]))
+    oc = (r.get("trim") or {}).get("opening_check")
+    if oc:
+        rows.append(f"opening start check on the shown strip: ok={oc.get('ok')}, tries {oc.get('tries')}, start shifted "
+                    f"+{oc.get('shift_s')} s, {oc.get('detail')}")
     return "\n".join(rows)

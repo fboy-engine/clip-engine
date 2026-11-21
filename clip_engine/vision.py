@@ -142,6 +142,40 @@ def sample(media, start, dur, src_w, src_h, corners, fps=SAMPLE_FPS, small_w=SMA
     return {"times": times, "small": small, "faces": faces, "n": len(times)}
 
 
+def cam_diag(media, start, dur, src_w, src_h, out_jpg=None, fps=0.5, max_frames=24):
+    """Why was no facecam found? Per corner: frames with a face under the strict settings used for the
+    cam decision vs relaxed settings, and the largest face seen. Also writes a contact sheet of the
+    first source frames (full 16:9, so a person can look at the stream layout). Diagnostic only:
+    the cam decision itself is unchanged."""
+    import cv2
+    casc = load_face_cascade(cv2)
+    rep = {c: {"strict": 0, "relaxed": 0, "max_face_px": 0} for c in CORNER_SEARCH}
+    thumbs, n = [], 0
+    for t, fr in frames_iter(media, start, dur, fps, src_w, src_h):
+        n += 1
+        if len(thumbs) < 4:
+            thumbs.append(cv2.resize(fr, (480, int(round(480 * src_h / src_w))), interpolation=cv2.INTER_AREA))
+        for c, box in CORNER_SEARCH.items():
+            x0, y0, x1, y1 = region_px(box, src_w, src_h)
+            g = cv2.equalizeHist(cv2.cvtColor(fr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY))
+            if best_face(casc, cv2.cvtColor(fr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)) is not None:
+                rep[c]["strict"] += 1
+            m = max(24, int(0.04 * g.shape[1]))
+            f = casc.detectMultiScale(g, scaleFactor=1.05, minNeighbors=3, minSize=(m, m))
+            if len(f):
+                rep[c]["relaxed"] += 1
+                rep[c]["max_face_px"] = max(rep[c]["max_face_px"], int(max(r[2] for r in f)))
+        if n >= max_frames:
+            break
+    if out_jpg and thumbs:
+        h, w = thumbs[0].shape[:2]
+        sheet = np.zeros((h * 2, w * 2, 3), np.uint8)
+        for i, th in enumerate(thumbs):
+            sheet[(i // 2) * h:(i // 2 + 1) * h, (i % 2) * w:(i % 2 + 1) * w] = th
+        cv2.imwrite(out_jpg, sheet, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    return {"frames": n, "corners": rep, "min_hits_needed_pct": round(100 * MIN_FACE_HITS)}
+
+
 def choose_cam(faces, n, src_w, src_h, min_hits=MIN_FACE_HITS, max_spread=0.2):
     """Pick the corner whose face detections are frequent AND stable (a real cam stays put; a
     game character does not). Returns {corner, obs, hit_pct, rect} or None, plus a stats dict."""

@@ -286,6 +286,8 @@ jobs:
             out/clip.ass
             out/render.json
             out/grade.json
+            out/cam_diag.json
+            out/source_contact.jpg
             out/encode.log
             out/review/*.jpg
           retention-days: 14

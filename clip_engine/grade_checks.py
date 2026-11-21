@@ -3,7 +3,7 @@
 Each check returns {"name", "status", "detail"}; status is pass | fail | warn | n/a.
 A check that cannot measure something says so (warn / n/a); it never passes by default.
 """
-from . import hooks
+from . import captions, hooks
 from .config import (CRF, MIN_LEN, MAX_LEN, OUT_W, OUT_H, PUNCH_TARGET, PUNCH_HARD_CAP,
                      TARGET_LUFS, TRUE_PEAK, HOOK_MAX_SEC)
 
@@ -108,6 +108,13 @@ def check_hook(m):
         bad.append(f"hook starts at {t:.2f} s")
     if hooks.clean_hook(text) != text:
         bad.append("hook text is not clean (symbols, length)")
+    if len(text.split()) > hooks.MAX_WORDS:
+        bad.append(f"hook has {len(text.split())} words (max {hooks.MAX_WORDS})")
+    elif not hooks.is_complete(text):
+        bad.append("hook is not a complete line (too short or ends mid-thought)")
+    first = a.get("first_caption") or ""
+    if first and hooks.duplicates(text, first):
+        bad.append(f'hook repeats the first caption line ("{first}")')
     return _c("hook within 1 s", FAIL if bad else PASS, "; ".join(bad) or f'"{text}" from {t:.2f} s')
 
 
@@ -123,8 +130,33 @@ def check_captions(m):
     dur = (m.get("video") or {}).get("duration") or 0
     if a.get("last_end", 0) > dur + 0.05:
         bad.append("captions run past the clip end")
+    fonts = a.get("fonts")
+    if fonts is not None and (captions.FONT not in fonts or any("dejavu" in f.lower() for f in fonts)):
+        bad.append(f"fonts {fonts}: want the bundled {captions.FONT}, not DejaVu")
+    if a.get("unmasked_profanity"):
+        bad.append("unmasked profanity: " + ", ".join(a["unmasked_profanity"][:5]))
     return _c("one caption style, max 1 highlight", FAIL if bad else PASS,
-              "; ".join(bad) or f"{a.get('caption_lines')} lines, max {a.get('max_highlights')} highlight per line")
+              "; ".join(bad) or f"{a.get('caption_lines')} lines, max {a.get('max_highlights')} highlight per line, "
+              f"font {', '.join(fonts or [])}")
+
+
+def check_caption_lane(m):
+    """Captions sit on the seam when the cam block is on top, and no text is drawn over other text."""
+    name = "caption lane: on the seam, no text over text"
+    a = m.get("ass") or {}
+    bands = a.get("bands")
+    if not bands:
+        return _c(name, WARN, "no text bands to check")
+    bad = []
+    ov = captions.band_overlaps(bands)
+    if ov:
+        bad.append("text over text: " + ", ".join(f"{x}/{y} at {t:g}s" for x, y, t in ov[:4]))
+    if (m.get("render") or {}).get("layout") == "cam_top":
+        main = [b for b in bands if b[0] == "Main"]
+        off = [b for b in main if abs((b[3] + b[4]) / 2 - captions.SEAM_Y) > 12]
+        if not main or off:
+            bad.append(f"captions are not centred on the seam (y {captions.SEAM_Y})")
+    return _c(name, FAIL if bad else PASS, "; ".join(bad) or f"{len(bands)} text bands, none overlapping")
 
 
 def check_crop(m):
@@ -253,7 +285,8 @@ def check_hook_match(m):
 
 
 ALL = (check_video, check_duration, check_trim, check_crf, check_loudness, check_balance, check_audio_added,
-       check_hook, check_hook_match, check_opening, check_cold_open, check_ending, check_captions, check_layout,
+       check_hook, check_hook_match, check_opening, check_cold_open, check_ending, check_captions, check_caption_lane,
+       check_layout,
        check_subject, check_crop, check_visual, check_motion)
 
 

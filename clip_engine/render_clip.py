@@ -146,7 +146,7 @@ def decode_cmd(media, start, n, fps):
 
 def encode_cmd(media, start, dur, ass_path, out_path, fps, af, crf=config.CRF, preset=config.PRESET):
     # setparams writes primaries/transfer on the frames; the -color_* options alone left them "unknown" (ffmpeg 8)
-    vf = (f"ass={ass_path},scale=out_color_matrix=bt709:out_range=tv,"
+    vf = (f"ass={ass_path}:fontsdir={captions.FONTS_DIR},scale=out_color_matrix=bt709:out_range=tv,"
           "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv,format=yuv420p")
     return ["ffmpeg", "-hide_banner", "-nostdin", "-y",
             "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{OUT_W}x{OUT_H}", "-r", fps_arg(fps), "-i", "-",
@@ -368,9 +368,11 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         cw = [w for w in asr_fix.to_clip_time(words, s_f) if w["s"] < dur]
         for w in cw:
             w["e"] = min(w["e"], dur)
+        cw = asr_fix.mask_profanity(cw)
         lane = caption_lane.lanes(False)
-        ass = captions.to_ass(cw, 0.0, OUT_W, OUT_H, lane["caption_margin_v"])
-        hook, hook_src, hook_match = hooks.choose_hook(hook_text, cw)
+        hook, hook_src, hook_match = hooks.choose_hook(asr_fix.mask_text(hook_text), cw)
+        cap_words = captions.drop_hook_words(cw, hook, hooks.HOOK_SHOW)      # the hook shows the opening words
+        ass = captions.to_ass(cap_words, 0.0, OUT_W, OUT_H, lane["caption_margin_v"], lane["seam_y"])
         ass = hooks.add_hook(ass, hook, lane["hook_margin_v"])
         ass_path = os.path.join(out_dir, "clip.ass")
         with open(ass_path, "w") as f:

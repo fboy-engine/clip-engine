@@ -8,6 +8,7 @@ from fractions import Fraction
 import numpy as np
 
 from . import analyze, balance, gates, grade_checks, subject, transcribe
+from . import asr_fix, captions
 from .captions import HL_ON
 
 REVIEW_TIMES = (0.3, 0.9, 4.0, 10.0, 18.0, 26.0)
@@ -84,10 +85,16 @@ def parse_ass(text):
     rows = [l[len("Dialogue:"):].strip().split(",", 4) for l in text.splitlines() if l.startswith("Dialogue:")]
     hook = [r for r in rows if r[3] == "Hook"]
     cap = [r for r in rows if r[3] != "Hook"]
-    return {"hook_start": _t(hook[0][1]) if hook else None, "hook_text": hook[0][4] if hook else "",
+    plain = lambda s: re.sub(r"\{[^}]*\}", "", s)
+    lines = captions.plain_lines(text)
+    words = [w for l in lines for w in l.split()] + (hook[0][4].split() if hook else [])
+    return {"hook_start": _t(hook[0][1]) if hook else None, "hook_text": plain(hook[0][4]).strip() if hook else "",
             "caption_styles": sorted({r[3] for r in cap}), "caption_lines": len(cap),
             "max_highlights": max((r[4].count(HL_ON) for r in cap), default=0),
-            "last_end": max((_t(r[2]) for r in cap), default=0.0)}
+            "last_end": max((_t(r[2]) for r in cap), default=0.0),
+            "first_caption": lines[0] if lines else "", "fonts": captions.ass_fonts(text),
+            "bands": captions.ass_bands(text),
+            "unmasked_profanity": [w for w in words if asr_fix.PROFANE.match(re.sub(r"^\W+|\W+$", "", w))]}
 
 
 def subject_output(clip, y0, h, fps=2, w_out=540):

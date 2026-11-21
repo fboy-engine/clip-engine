@@ -2,20 +2,52 @@
 import re
 
 from .config import HOOK_MAX_SEC
+from . import captions
 
 HOOK_SHOW = 2.6      # seconds the hook stays up
 MAX_WORDS = 6
 MIN_WORD_S = 0.08     # shorter "words" are ASR slivers, never a hook
 MAX_PAUSE = 0.8       # a longer pause ends the hook line
+# a hook that ends on one of these is cut off mid-thought
+DANGLING = set("a an the and or but so to of in on at with for from by as if than then because my your his her their "
+               "our its is are was were am be been into onto about like who which".split())
 
 
 def clean_hook(text):
-    t = re.sub(r"[^\w\s'!?,.\-]", "", text or "")       # no emoji or symbols
+    t = re.sub(r"[^\w\s'!?,.\-*]", "", text or "")      # no emoji or symbols (the profanity mask * stays)
     t = re.sub(r"\s+", " ", t).strip().rstrip(".,-")
     words = t.split()
     if not (2 <= len(words) <= MAX_WORDS) or not re.search(r"[A-Za-z]", t):
         return ""
     return t
+
+
+def last_token(text):
+    toks = [x for x in re.sub(r"[^a-z0-9' ]", " ", (text or "").lower()).split() if x]
+    return toks[-1] if toks else ""
+
+
+def is_complete(text):
+    """A finished thought: 2-6 words, and it does not end on a word that needs a continuation."""
+    n = len((text or "").split())
+    return 2 <= n <= MAX_WORDS and last_token(text) not in DANGLING
+
+
+def trim_dangling(words):
+    """Drop trailing function words ("lock the" -> "lock") so the line does not stop mid-thought."""
+    ws = list(words)
+    while ws and last_token(ws[-1]) in DANGLING:
+        ws.pop()
+    return ws
+
+
+def duplicates(hook, first_line, thr=0.8):
+    """True when the hook just repeats the first caption line (same words, or one contains the other)."""
+    a, b = captions._tok(hook), captions._tok(first_line)
+    if not a or not b:
+        return False
+    sa, sb = set(a), set(b)
+    return len(sa & sb) / min(len(sa), len(sb)) >= thr
 
 
 def pick_hook(gemini_hook, words):
@@ -68,7 +100,7 @@ def choose_hook(given, words, within=3.0, min_overlap=0.6):
             break
         if len(line) >= MAX_WORDS:
             break
-    c = clean_hook(" ".join(line))
+    c = clean_hook(" ".join(trim_dangling(line)))
     if c:
         return c, "speech_first3s", True
     if cand:
@@ -80,7 +112,7 @@ def add_hook(ass, text, margin_v=300, show=HOOK_SHOW):
     """Add the hook to an ASS script made by captions.to_ass: same font, top lane, from t=0."""
     if not text:
         return ass
-    style = ("Style: Hook,DejaVu Sans,72,&H00FFFFFF,&H00000000,&H64000000,1,1,5,1,8,60,60,"
+    style = (f"Style: Hook,{captions.FONT},{captions.HOOK_SIZE},&H00FFFFFF,&H00000000,&H64000000,0,1,5,1,8,60,60,"
              f"{margin_v}\n")
     head, sep, rest = ass.partition("\n[Events]")
     head = head.rstrip("\n") + "\n" + style

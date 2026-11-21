@@ -8,7 +8,7 @@ from .config import (CRF, MIN_LEN, MAX_LEN, OUT_W, OUT_H, PUNCH_TARGET, PUNCH_HA
                      TARGET_LUFS, TRUE_PEAK, HOOK_MAX_SEC)
 
 PASS, FAIL, WARN, NA = "pass", "fail", "warn", "n/a"
-ALLOWED_AUDIO_FILTERS = ("afade", "loudnorm")
+ALLOWED_AUDIO_FILTERS = ("afade", "acompressor", "loudnorm", "alimiter")
 LUFS_TOL, LUFS_WARN = 1.0, 2.0
 TP_FAIL = -1.0
 MAX_PAN_PX_S = 700.0         # source px per second; faster reads as a whip pan
@@ -30,7 +30,12 @@ def check_video(m):
     sf = e.get("source_fps")
     if sf and abs((v.get("fps") or 0) - sf) > 0.05:
         bad.append(f"fps {v.get('fps')} (source {sf})")
-    ok = f"{v.get('width')}x{v.get('height')} {v.get('codec')} {v.get('pix_fmt')} {v.get('fps')} fps"
+    for key, want in (("color_range", "tv"), ("color_space", "bt709"), ("color_transfer", "bt709"),
+                      ("color_primaries", "bt709")):
+        if v.get(key) != want:
+            bad.append(f"{key} {v.get(key)} (want {want})")
+    ok = (f"{v.get('width')}x{v.get('height')} {v.get('codec')} {v.get('pix_fmt')} {v.get('fps')} fps, "
+          f"{v.get('bit_rate_kbps')} kbps, bt709 tv")
     return _c("video format", FAIL if bad else PASS, "; ".join(bad) or ok)
 
 
@@ -147,6 +152,50 @@ def check_crop(m):
               "; ".join(bad + warn) or detail)
 
 
+def check_layout(m):
+    r = m.get("render") or {}
+    lay = r.get("layout")
+    cb = r.get("cam_block") or {}
+    name = "layout: cam on top, bigger gameplay below"
+    if lay == "cam_top":
+        from .layout import CAM_H, PANEL_H
+        return _c(name, PASS if PANEL_H > CAM_H else FAIL,
+                  f"cam {cb.get('corner')} (face in {cb.get('face_hit_pct')}% of samples), cam block {CAM_H}px "
+                  f"({cb.get('box_px')} px source, x{cb.get('upscale')} upscale), panel {PANEL_H}px")
+    if lay == "full":
+        return _c(name, WARN, "no facecam found: gameplay-only 9:16 layout (reported, not hidden)")
+    return _c(name, NA, "not measured")
+
+
+def check_subject(m):
+    """Subject (the player character) inside the gameplay panel in >= 95% of sampled frames."""
+    name = "subject inside panel >= 95%"
+    o = m.get("subject_out") or {}
+    plan = (m.get("render") or {}).get("subject") or {}
+    if o.get("error") or not o:
+        return _c(name, WARN, "output re-detection unavailable: " + str(o.get("error", "not run")))
+    det, inside = o.get("detected_pct", 0.0), o.get("inside_pct")
+    unseen = o.get("unseen_times", [])
+    if inside is None or det < 25:
+        return _c(name, WARN, f"cannot verify: person detected in only {det}% of {o.get('samples')} samples "
+                  f"(plan-level: tracked {plan.get('tracked_pct')}%, inside {plan.get('inside_pct')}%)")
+    detail = (f"{inside}% inside on {det}% detected frames of {o.get('samples')}; plan-level tracked "
+              f"{plan.get('tracked_pct')}% inside {plan.get('inside_pct')}%")
+    if inside < 95.0:
+        return _c(name, FAIL, detail + "; cut at " + ", ".join(f"{t:g}s" for t in o.get("cut_times", [])[:20]))
+    if det < 60:
+        return _c(name, WARN, detail + f"; unseen at {', '.join(f'{t:g}s' for t in unseen[:12])}")
+    return _c(name, PASS, detail)
+
+
+def check_balance(m):
+    b = m.get("balance") or {}
+    if b.get("error") or b.get("gap_db") is None:
+        return _c("voice vs game audio", WARN, "not measurable: " + str(b.get("error", "too little speech")))
+    detail = f"voice {b['voice_db']} dB, loud peaks {b['loud_db']} dB (50 ms RMS), gap {b['gap_db']} dB"
+    return _c("voice vs game audio", WARN if b["gap_db"] > 14 else PASS, detail)
+
+
 def check_visual(m):
     v = m.get("visual")
     if not v:
@@ -161,8 +210,8 @@ def check_motion(m):
     return _c("motion gate", PASS if v["ok"] else FAIL, v["detail"])
 
 
-ALL = (check_video, check_duration, check_trim, check_crf, check_loudness, check_audio_added,
-       check_hook, check_captions, check_crop, check_visual, check_motion)
+ALL = (check_video, check_duration, check_trim, check_crf, check_loudness, check_balance, check_audio_added,
+       check_hook, check_captions, check_layout, check_subject, check_crop, check_visual, check_motion)
 
 
 def run_all(m):
@@ -180,3 +229,19 @@ def format_report(checks):
     lines.append(f"GRADE: {'FAIL' if nf else 'PASS'} ({nf} failed, {nw} warnings, "
                  f"{sum(c['status'] == PASS for c in checks)} passed)")
     return "\n".join(lines)
+
+
+def key_numbers(m):
+    """The short block the run summary leads with."""
+    v, L, b = m.get("video") or {}, m.get("loud") or {}, m.get("balance") or {}
+    r, o = m.get("render") or {}, m.get("subject_out") or {}
+    cb = r.get("cam_block") or {}
+    rows = [f"resolution {v.get('width')}x{v.get('height')}, {v.get('fps')} fps, {v.get('bit_rate_kbps')} kbps, "
+            f"{m.get('size_mb')} MB, duration {v.get('duration')} s",
+            f"loudness {L.get('i')} LUFS, LRA {L.get('lra')}, true peak {L.get('tp')} dBFS",
+            f"voice {b.get('voice_db')} dB vs loud peaks {b.get('loud_db')} dB (gap {b.get('gap_db')})",
+            f"layout {r.get('layout')}; cam found: {'yes' if cb.get('found') else 'NO'}"
+            + (f" ({cb.get('corner')}, face in {cb.get('face_hit_pct')}%, x{cb.get('upscale')} upscale)" if cb.get("found") else ""),
+            f"subject in frame: {o.get('inside_pct')}% of detected ({o.get('detected_pct')}% of {o.get('samples')} samples); "
+            f"render-time plan {((r.get('subject') or {}).get('inside_pct'))}%"]
+    return "\n".join(rows)

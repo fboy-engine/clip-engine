@@ -110,7 +110,7 @@ def _grade_out(out):
     from . import grade_checks, grade_clip
     p = lambda n: os.path.join(out, n)
     m, checks = grade_clip.grade(p("clip.mp4"), p("render.json"), p("clip.ass"), out)
-    text = grade_checks.format_report(checks)
+    text = grade_checks.key_numbers(m) + "\n\n" + grade_checks.format_report(checks)
     print(text)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
@@ -126,7 +126,12 @@ def cmd_render(a):
         render_clip.render(a.media, a.start, a.end, a.out, a.hook, a.cam_corner, rect,
                            model=a.model, cache_dir=a.cache_dir)
     except Exception as e:  # report the real failure, never fake a pass
-        print(f"FAIL render: {type(e).__name__}: {str(e)[:400]}")
+        msg = f"FAIL render: {type(e).__name__}: {str(e)[:400]}"
+        print(msg)
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary:
+            with open(summary, "a") as f:
+                f.write("### Clip render FAILED\n```\n" + msg + "\n```\n")
         return 1
     return _grade_out(a.out)
 

@@ -7,7 +7,7 @@ from fractions import Fraction
 
 import numpy as np
 
-from . import analyze, gates, grade_checks
+from . import analyze, balance, gates, grade_checks, subject, transcribe
 from .captions import HL_ON
 
 REVIEW_TIMES = (0.3, 0.9, 4.0, 10.0, 18.0, 26.0)
@@ -31,8 +31,13 @@ def probe(path):
     a = next((s for s in d["streams"] if s["codec_type"] == "audio"), None)
     n = _run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries",
               "stream=nb_read_frames", "-of", "csv=p=0", path]).stdout.strip()
+    dur_f = float(v.get("duration") or d["format"]["duration"])
+    br = int(v.get("bit_rate") or 0) or int(int(d["format"].get("size", 0)) * 8 / max(dur_f, 0.001))
     video = {"width": v.get("width"), "height": v.get("height"), "codec": v.get("codec_name"),
              "pix_fmt": v.get("pix_fmt"), "fps": round(_fps(v.get("r_frame_rate", "0")), 3),
+             "bit_rate_kbps": round(br / 1000), "color_range": v.get("color_range"),
+             "color_space": v.get("color_space"), "color_transfer": v.get("color_transfer"),
+             "color_primaries": v.get("color_primaries"),
              "frames": int(n) if n.isdigit() else None,
              "duration": round(float(v.get("duration") or d["format"]["duration"]), 3)}
     audio = None
@@ -85,6 +90,23 @@ def parse_ass(text):
             "last_end": max((_t(r[2]) for r in cap), default=0.0)}
 
 
+def subject_output(clip, y0, h, fps=2, w_out=540):
+    """Re-detect the person in the RENDERED gameplay panel (independent of the render-time tracker)."""
+    from . import vision
+    hh = int(round(h * w_out / 1080 / 2) * 2)
+    cmd = ["ffmpeg", "-v", "error", "-nostdin", "-i", clip, "-an", "-vf",
+           f"fps={fps},crop=1080:{h}:0:{y0},scale={w_out}:{hh}:flags=area", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
+    p = subprocess.run(cmd, capture_output=True)
+    size = w_out * hh * 3
+    n = len(p.stdout) // size
+    dets, times = [], []
+    for i in range(n):
+        im = np.frombuffer(p.stdout[i * size:(i + 1) * size], np.uint8).reshape(hh, w_out, 3)
+        dets.append([(b[0] * w_out, b[1] * hh, b[2] * w_out, b[3] * hh, b[4]) for b in vision.detect_people(im)])
+        times.append(i / fps)
+    return subject.summarize_output(subject.classify_output(dets, w_out), times)
+
+
 def review_frames(path, out_dir, duration, times=REVIEW_TIMES):
     os.makedirs(out_dir, exist_ok=True)
     made = []
@@ -107,6 +129,16 @@ def grade(clip, render_json, ass_path, out_dir):
     m["visual"] = dict(zip(("ok", "detail"), gates.visual_gate(gray_frames(clip, 2, 108, 192))))
     series = analyze.motion_series(gray_frames(clip, 4, 54, 96), fps=4)
     m["motion"] = dict(zip(("ok", "detail"), gates.motion_gate(series)))
+    try:
+        pan = r["grade_inputs"].get("panel") or {"y0": 0, "h": 1920}
+        m["subject_out"] = subject_output(clip, pan["y0"], pan["h"])
+    except Exception as e:      # cv2 missing etc.: say so, never pass by default
+        m["subject_out"] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
+    try:
+        pcm = transcribe.decode_pcm(clip, 0.0, video["duration"])
+        m["balance"] = balance.balance(pcm, transcribe.SR, r.get("word_spans", []))
+    except Exception as e:
+        m["balance"] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
     checks = grade_checks.run_all(m)
     m["review_frames"] = review_frames(clip, os.path.join(out_dir, "review"), video["duration"])
     with open(os.path.join(out_dir, "grade.json"), "w") as f:

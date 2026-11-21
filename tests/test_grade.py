@@ -5,17 +5,22 @@ from clip_engine import grade_checks as gc, grade_clip as g
 
 GOOD = {
     "video": {"width": 1080, "height": 1920, "codec": "h264", "pix_fmt": "yuv420p", "fps": 60.0,
-              "frames": 2280, "duration": 38.0},
+              "frames": 2280, "duration": 38.0, "bit_rate_kbps": 14000, "color_range": "tv",
+              "color_space": "bt709", "color_transfer": "bt709", "color_primaries": "bt709"},
     "audio": {"codec": "aac", "sample_rate": 48000, "duration": 38.0},
     "expected": {"frames": 2280, "duration": 38.0, "source_fps": 60.0},
     "crf": 17.0, "short_frames": 0,
     "loud": {"i": -14.2, "lra": 6.0, "tp": -1.6},
-    "render": {"audio_inputs": 1, "audio_filters": ["afade", "loudnorm"], "zoom_max": 0.08,
+    "render": {"audio_inputs": 1, "audio_filters": ["afade", "acompressor", "loudnorm", "alimiter"], "zoom_max": 0.05,
+               "layout": "cam_top", "subject": {"inside_pct": 99.0, "tracked_pct": 80.0},
+               "cam_block": {"found": True, "corner": "bottom-left", "face_hit_pct": 88.0, "box_px": [504, 252], "upscale": 2.14},
                "crop_in_frame": True, "pan_max_px_s": 200.0, "pan_total_px": 300.0,
                "cam": {"rect": [0, .6, .25, 1], "excluded": True, "how": "assumed"}},
     "ass": {"hook_start": 0.0, "hook_text": "Everyone dies today!", "caption_styles": ["Main"],
             "caption_lines": 12, "max_highlights": 1, "last_end": 37.5},
     "visual": {"ok": True, "detail": "ok"}, "motion": {"ok": True, "detail": "ok"},
+    "subject_out": {"inside_pct": 98.0, "detected_pct": 80.0, "samples": 76, "cut_times": [], "unseen_times": []},
+    "balance": {"voice_db": -22.0, "loud_db": -12.0, "gap_db": 10.0},
 }
 
 
@@ -56,6 +61,24 @@ class Checks(unittest.TestCase):
         self.assertEqual(status(mod(["render", "crop_in_frame"], False), "tracked crop + punch-in"), gc.FAIL)
         self.assertEqual(status(mod(["visual", "ok"], False), "visual gate"), gc.FAIL)
         self.assertEqual(status(mod(["motion", "ok"], False), "motion gate"), gc.FAIL)
+
+    def test_new_rules(self):
+        self.assertEqual(status(mod(["video", "color_range"], "pc"), "video format"), gc.FAIL)
+        self.assertEqual(status(mod(["video", "color_space"], None), "video format"), gc.FAIL)
+        bad = {"inside_pct": 90.0, "detected_pct": 80.0, "samples": 76, "cut_times": [3.5, 4.0], "unseen_times": []}
+        self.assertEqual(status(mod(["subject_out"], bad), "subject inside panel >= 95%"), gc.FAIL)
+        c = next(c for c in gc.run_all(mod(["subject_out"], bad)) if c["name"].startswith("subject"))
+        self.assertIn("3.5s", c["detail"])
+        low = {"inside_pct": 100.0, "detected_pct": 10.0, "samples": 76, "cut_times": [], "unseen_times": []}
+        self.assertEqual(status(mod(["subject_out"], low), "subject inside panel >= 95%"), gc.WARN)
+        self.assertEqual(status(mod(["subject_out"], {"error": "x"}), "subject inside panel >= 95%"), gc.WARN)
+        self.assertEqual(status(mod(["balance", "gap_db"], 18.0), "voice vs game audio"), gc.WARN)
+        self.assertEqual(status(mod(["render", "layout"], "full"), "layout: cam on top, bigger gameplay below"), gc.WARN)
+
+    def test_key_numbers_has_the_run_summary_fields(self):
+        k = gc.key_numbers(GOOD)
+        for s in ("1080x1920", "60.0 fps", "14000 kbps", "-14.2 LUFS", "cam found: yes", "subject in frame: 98.0%"):
+            self.assertIn(s, k)
 
     def test_loudness_bands(self):
         self.assertEqual(status(mod(["loud", "i"], -15.5), "loudness -14 LUFS"), gc.WARN)

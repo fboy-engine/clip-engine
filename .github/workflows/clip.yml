@@ -66,7 +66,7 @@ on:
         description: Cold-open hook caption (max 6 words; empty = pick a line from the speech)
         default: ""
       cam_corner:
-        description: Facecam corner to keep out of the crop (bottom-left, bottom-right, top-left, top-right; empty = none)
+        description: Facecam corner (bottom-left, bottom-right, top-left, top-right), empty = auto-find by face detection, none = gameplay-only
         default: ""
       cache_only:
         description: Fail instead of downloading if the source cache misses
@@ -254,9 +254,9 @@ jobs:
         run: |
           timeout 240 pip install -q --default-timeout 30 --retries 2 opencv-python-headless
           python -c "import cv2; print('opencv', cv2.__version__)"
-      - name: Render clip (tracked 9:16 crop, captions, hook, -14 LUFS) and grade it
+      - name: Render clip (cam on top, subject-tracked gameplay panel, captions, hook, -14 LUFS) and grade it
         if: ${{ inputs.render }}
-        timeout-minutes: 25
+        timeout-minutes: 35
         env:
           HF_HUB_DISABLE_PROGRESS_BARS: "1"
           RSTART: ${{ inputs.render_start }}

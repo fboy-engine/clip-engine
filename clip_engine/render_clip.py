@@ -23,6 +23,7 @@ GRAY_FPS, GRAY_W, GRAY_H = 4, 64, 36
 FADE = 0.012
 END_FADE = 0.15       # short fade out at the end (0.1-0.2 s is fine; no long fade to silence)
 MOTION_FPS = 20
+PICK_FPS = 10         # start picking samples the shown strip at the grade's rate
 OPEN_TRIES = 3        # re-plan the cut at most this many times when the shown opening is frozen
 NOMINAL_CAM = layout.NOMINAL_CAM
 GLOSSARY = {"lucia": "Lucia"}
@@ -251,23 +252,28 @@ def plan_cut(media, pr, start, end, words, cam_corner, cam_rect, payoff, notes, 
         cam, _ = vision.choose_cam(smp["faces"], smp["n"], src_w, src_h)
         rect = cam["rect"] if cam else None
         del smp
-    gray = decode_gray_at(media, start, trim.START_SEARCH + 2.0, MOTION_FPS)
-    d = trim.motion_diffs(gray, rect)
+    # search the WHOLE moment: gray frames at the grade's 10 fps, the strip the subject-tracked crop shows
+    span = env_end - start
+    gray = decode_gray_at(media, start, span, PICK_FPS, w=192, h=108)
+    pw = layout.panel_wh(src_w, src_h)[0] if rect else src_h * 9 / 16
+    bounds = cam_layout.crop_bounds(rect, src_w, pw)
+    cx = smooth(track.centroid_x(gray, rect), alpha=0.4, deadband=0.03)
+    lefts = [max(bounds[0], min(c * src_w - pw / 2, bounds[1])) / src_w for c in cx]
+    strip = trim.crop_cols_path(gray, lefts, pw / src_w)
     pcm = transcribe.decode_pcm(media, start, env_end)
     rms = balance.rms_db(pcm, transcribe.SR, 0.05)
-    off, sinfo = trim.choose_start(d, MOTION_FPS, rms, 0.05)
+    rel = [{**w, "s": w["s"] - start, "e": w["e"] - start} for w in words]
+    off, sinfo = trim.pick_start(strip, PICK_FPS, rms, 0.05, rel, 0.0, span, min_left=config.MIN_LEN)
     if off is None:
-        raise ValueError(f"no real motion with sound in {trim.START_SEARCH:g} s after {start:g}s "
-                         f"(frozen or silent opening): skip this moment ({sinfo})")
-    t0, snote = trim.snap_start_forward(words, start + off)
-    if snote:
-        notes.append(snote)
+        raise ValueError(f"no start in {start:g}-{env_end:g}s where the shown strip moves and speech or a loud "
+                         f"peak follows with {config.MIN_LEN:g} s left: skip this moment ({sinfo})")
+    t0, snote = start + off, ""
     lo, hi = t0 + config.MIN_LEN, min(t0 + config.MAX_LEN, env_end)
     t1, why, enotes = trim.payoff_end(words, t0, lo, hi, rms, 0.05, payoff, rms_t0=start)
     notes += enotes
     info = {"asked": [start, end], "in": round(t0, 3), "out": round(t1, 3), "start_motion": sinfo,
             "start_note": snote, "end_reason": why, "facecam_masked": bool(rect)}
-    log(f"trim: in {t0:.2f}s (asked {start:g}, first motion +{off:.2f}s), out {t1:.2f}s: {why}")
+    log(f"trim: in {t0:.2f}s (asked {start:g}, +{off:.2f}s; {sinfo.get('reason')}), out {t1:.2f}s: {why}")
     return t0, t1, info
 
 

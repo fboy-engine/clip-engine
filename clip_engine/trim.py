@@ -115,6 +115,91 @@ def visible_start(strip, fps, rms, hop, search=START_SEARCH, secs=3.0, step=0.1,
     return None, {"visible_start_s": None, "checked": len(tried), "audio_ok": False}
 
 
+def crop_cols_path(gray, lefts, width):
+    """Like crop_cols, but the crop moves: lefts[i] is the left edge (fraction of the frame width) for
+    frame i. This is the strip a subject-tracked 9:16 crop really shows at each moment."""
+    g = np.asarray(gray)
+    n, _, w = g.shape
+    wc = max(2, min(w, int(round(width * w))))
+    out = np.empty((n, g.shape[1], wc), dtype=g.dtype)
+    for i in range(n):
+        left = lefts[min(i, len(lefts) - 1)] if len(lefts) else 0.0
+        x0 = int(min(max(round(left * w), 0), w - wc))
+        out[i] = g[i, :, x0:x0 + wc]
+    return out
+
+
+MIN_WORD_S = 0.08        # shorter "words" are ASR slivers, not speech
+
+
+def _real_words(words):
+    return [w for w in words if (w["e"] - w["s"]) >= MIN_WORD_S]
+
+
+def inside_word(words, t, tol=0.03):
+    return any(w["s"] + tol < t < w["e"] - tol for w in _real_words(words))
+
+
+def speech_follows(words, t, within=3.0, first_by=1.2, need=2):
+    """At least `need` real spoken words start in [t, t+within) and the first one within `first_by` s."""
+    hit = [w for w in _real_words(words) if t <= w["s"] < t + within]
+    return len(hit) >= need and hit[0]["s"] - t <= first_by
+
+
+def peak_follows(rms, hop, t, span=2.0, lift_db=8.0):
+    """A loud peak (>= lift_db over the median level) in [t, t+span)."""
+    r = np.asarray(rms, dtype=np.float64)
+    live = r[r > -80]
+    if live.size == 0:
+        return False
+    seg = r[int(t / hop):int((t + span) / hop) + 1]
+    return bool(seg.size and float(seg.max() - np.median(live)) >= lift_db)
+
+
+def pick_start(strip, fps, rms, hop, words, t_lo, t_hi, min_left=25.0, secs=3.0, step=0.1, gate=None):
+    """Search the WHOLE moment for the first start where the SHOWN strip passes the opening gate and
+    speech (else a loud peak) follows, with at least `min_left` s left before t_hi.
+    strip: gray stack (n, h, w) of the shown crop from the moment start at `fps`; rms (dBFS, hop s),
+    words (s/e/w) and t_lo/t_hi are all on that same clock (0 = moment start). Candidates are a time
+    grid plus the start of every word (just before it); never inside a word. The gate is not loosened:
+    returns (None, info) when nothing qualifies, and the caller must skip the moment.
+    Speech starts are tried first; a peak-only start is the fallback."""
+    if gate is None:
+        from . import gates
+        gate = gates.opening_gate
+    strip = np.asarray(strip)
+    k = max(1, int(round(fps / 10.0)))                  # the grade samples the opening at 10 fps
+    need = int(round(secs * fps))
+    last = min(t_hi - min_left, (len(strip) - need) / fps)
+    cands = set(round(t_lo + i * step, 3) for i in range(int(max(last - t_lo, -1) / step) + 1))
+    cands |= {round(w["s"] - 0.08, 3) for w in _real_words(words) if t_lo <= w["s"] - 0.08 <= last}
+    cands = sorted(c for c in cands if t_lo <= c <= last + 1e-9)
+    why = {"candidates": len(cands), "mid_word": 0, "shown_strip_frozen": 0, "silent": 0, "no_speech_or_peak": 0}
+    gate_ok = {}
+    for mode in ("speech", "peak"):
+        for t in cands:
+            if inside_word(words, t):
+                why["mid_word"] += mode == "speech"
+                continue
+            if t not in gate_ok:
+                i0 = int(round(t * fps))
+                seg = strip[i0:i0 + need:k]
+                gate_ok[t] = gate(seg, fps / k)[0] if len(seg) >= 3 else False
+                why["shown_strip_frozen"] += (not gate_ok[t]) and mode == "speech"
+            if not gate_ok[t]:
+                continue
+            if not audible_at(rms, hop, t):
+                why["silent"] += mode == "speech"
+                continue
+            if mode == "speech" and speech_follows(words, t):
+                return round(t, 3), {"start_s": round(t, 3), "reason": "speech follows", "left_s": round(t_hi - t, 1), **why}
+            if mode == "peak" and peak_follows(rms, hop, t):
+                return round(t, 3), {"start_s": round(t, 3), "reason": "loud peak follows (no speech)",
+                                     "left_s": round(t_hi - t, 1), **why}
+            why["no_speech_or_peak"] += mode == "peak"
+    return None, {"start_s": None, **why}
+
+
 def snap_start_forward(words, t, max_fwd=1.0, lead=0.08):
     """If t falls inside a word, move to just before the next word when that is within max_fwd s.
     Never moves earlier (an earlier start would bring the dead opening back)."""

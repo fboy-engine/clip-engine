@@ -5,6 +5,8 @@ from .config import HOOK_MAX_SEC
 
 HOOK_SHOW = 2.6      # seconds the hook stays up
 MAX_WORDS = 6
+MIN_WORD_S = 0.08     # shorter "words" are ASR slivers, never a hook
+MAX_PAUSE = 0.8       # a longer pause ends the hook line
 
 
 def clean_hook(text):
@@ -54,10 +56,14 @@ def choose_hook(given, words, within=3.0, min_overlap=0.6):
     cand = clean_hook(given)
     if cand and overlap(cand, words, within) >= min_overlap:
         return cand, "given", True
-    first = [w for w in words if w["s"] < within]
-    line = []
+    # only words really spoken in the first seconds: no slivers, and a pause ends the line
+    first = [w for w in words if w["s"] < within and (w["e"] - w["s"]) >= MIN_WORD_S]
+    line, prev_e = [], None
     for w in first:
+        if prev_e is not None and w["s"] - prev_e > MAX_PAUSE:
+            break
         line.append(w["w"])
+        prev_e = w["e"]
         if w["w"].rstrip().endswith((".", "?", "!")) and len(line) >= 2:
             break
         if len(line) >= MAX_WORDS:

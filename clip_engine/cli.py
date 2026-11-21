@@ -139,12 +139,22 @@ def cmd_render(a):
         render_clip.render(a.media, a.start, a.end, a.out, a.hook, a.cam_corner, rect,
                            model=a.model, cache_dir=a.cache_dir, payoff=a.payoff)
     except Exception as e:  # report the real failure, never fake a pass
-        msg = f"FAIL render: {type(e).__name__}: {str(e)[:400]}"
+        msg = f"FAIL render: {type(e).__name__}: {str(e)[:900]}"
         print(msg)
+        lines = [msg]
+        try:    # cam diagnostics were written before the gates ran: report them even though no clip exists
+            os.makedirs(a.out, exist_ok=True)
+            with open(os.path.join(a.out, "render_error.json"), "w") as f:
+                json.dump({"error": msg}, f, indent=1)
+            with open(os.path.join(a.out, "cam_diag.json")) as f:
+                lines += ["cam diagnostics (face hits per corner, % of frames):"] + render_clip.diag_lines(json.load(f))
+        except Exception:
+            pass
+        print("\n".join(lines[1:]))
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
         if summary:
             with open(summary, "a") as f:
-                f.write("### Clip render FAILED\n```\n" + msg + "\n```\n")
+                f.write("### Clip render FAILED (no clip)\n```\n" + "\n".join(lines) + "\n```\n")
         return 1
     return _grade_out(a.out)
 

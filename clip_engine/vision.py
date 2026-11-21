@@ -142,38 +142,124 @@ def sample(media, start, dur, src_w, src_h, corners, fps=SAMPLE_FPS, small_w=SMA
     return {"times": times, "small": small, "faces": faces, "n": len(times)}
 
 
-def cam_diag(media, start, dur, src_w, src_h, out_jpg=None, fps=0.5, max_frames=24):
-    """Why was no facecam found? Per corner: frames with a face under the strict settings used for the
-    cam decision vs relaxed settings, and the largest face seen. Also writes a contact sheet of the
-    first source frames (full 16:9, so a person can look at the stream layout). Diagnostic only:
-    the cam decision itself is unchanged."""
+def _extra_cascades(cv2):
+    """Other stock cascades for small or stylised cams (alt2 frontal, profile). Missing ones are skipped."""
+    out = []
+    base = _dig(cv2, "data.haarcascades")
+    cls = cascade_class(cv2)
+    if base is None or cls is None:
+        return out
+    for name in ("haarcascade_frontalface_alt2.xml", "haarcascade_profileface.xml"):
+        try:
+            c = cls(base + name)
+            empty = getattr(c, "empty", None)
+            if not (callable(empty) and empty()):
+                out.append(c)
+        except Exception:
+            pass
+    return out
+
+
+def wide_face(cascades, gray, min_frac=0.025):
+    """Relaxed, wide-scale face search for small or stylised cams: tiny minimum size (a cam can be a small
+    inset), fine scale steps, few neighbours, several cascades, also on a 2x upscaled copy.
+    Returns the largest (x, y, w, h) in `gray` pixels or None. Used for diagnostics and for a cam region the
+    person pointed at; the strict detector (best_face) still decides the automatic cam."""
     import cv2
-    casc = load_face_cascade(cv2)
-    rep = {c: {"strict": 0, "relaxed": 0, "max_face_px": 0} for c in CORNER_SEARCH}
-    thumbs, n = [], 0
+    g = cv2.equalizeHist(gray)
+    m = max(18, int(min_frac * g.shape[1]))
+    best = None
+    for casc in cascades:
+        for img, k in ((g, 1.0), (cv2.resize(g, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC), 0.5)):
+            f = casc.detectMultiScale(img, scaleFactor=1.03, minNeighbors=2, minSize=(int(m / k), int(m / k)))
+            for r in f:
+                r = tuple(float(v) * k for v in r)
+                if best is None or r[2] * r[3] > best[2] * best[3]:
+                    best = r
+    return best
+
+
+def faces_in_rect(media, start, dur, rect, src_w, src_h, fps=2):
+    """Faces found by the relaxed detector inside a person-given cam rect (fractions).
+    Returns (obs [(t, cx, cy, face_w)] in source px, frames_seen)."""
+    import cv2
+    cascades = [load_face_cascade(cv2)] + _extra_cascades(cv2)
+    x0, y0, x1, y1 = region_px(rect, src_w, src_h)
+    obs, n = [], 0
     for t, fr in frames_iter(media, start, dur, fps, src_w, src_h):
         n += 1
-        if len(thumbs) < 4:
-            thumbs.append(cv2.resize(fr, (480, int(round(480 * src_h / src_w))), interpolation=cv2.INTER_AREA))
+        f = wide_face(cascades, cv2.cvtColor(fr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY))
+        if f is not None:
+            obs.append((t, x0 + f[0] + f[2] / 2, y0 + f[1] + f[3] / 2, float(f[2])))
+    return obs, n
+
+
+def cam_diag(media, start, dur, src_w, src_h, out_jpg=None, fps=0.25, max_frames=16, seed_rect=None):
+    """Why was no facecam found? Per corner: frames with a face under the strict settings used for the cam
+    decision, relaxed settings, and the wide-scale search (tiny min size, several cascades), plus the largest
+    face seen. Optional seed_rect (fractions, from a person) gets the same counts. Writes a contact sheet of
+    FULL source frames spread over the moment (6 tiles of 960x540, so a person can look at the stream layout)
+    and up to 3 native-resolution frames next to it (source_frame_N.jpg). Diagnostic only: the automatic cam
+    decision is unchanged."""
+    import cv2
+    casc = load_face_cascade(cv2)
+    cascades = [casc] + _extra_cascades(cv2)
+    rep = {c: {"strict": 0, "relaxed": 0, "wide": 0, "max_face_px": 0} for c in CORNER_SEARCH}
+    seed = {"rect": [round(float(v), 4) for v in seed_rect], "strict": 0, "wide": 0, "max_face_px": 0} if seed_rect else None
+    n_expect = max(1, min(max_frames, int(dur * fps)))
+    native_at = {0, n_expect // 2, n_expect - 1}
+    thumbs, n, native = [], 0, []
+    for t, fr in frames_iter(media, start, dur, fps, src_w, src_h):
+        n += 1
+        thumbs.append(cv2.resize(fr, (960, int(round(960 * src_h / src_w))), interpolation=cv2.INTER_AREA))
+        if out_jpg and (n - 1) in native_at and len(native) < 3:
+            native.append(fr.copy())
         for c, box in CORNER_SEARCH.items():
             x0, y0, x1, y1 = region_px(box, src_w, src_h)
-            g = cv2.equalizeHist(cv2.cvtColor(fr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY))
-            if best_face(casc, cv2.cvtColor(fr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)) is not None:
+            gray = cv2.cvtColor(fr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+            if best_face(casc, gray) is not None:
                 rep[c]["strict"] += 1
+            g = cv2.equalizeHist(gray)
             m = max(24, int(0.04 * g.shape[1]))
             f = casc.detectMultiScale(g, scaleFactor=1.05, minNeighbors=3, minSize=(m, m))
             if len(f):
                 rep[c]["relaxed"] += 1
                 rep[c]["max_face_px"] = max(rep[c]["max_face_px"], int(max(r[2] for r in f)))
+            w = wide_face(cascades, gray)
+            if w is not None:
+                rep[c]["wide"] += 1
+                rep[c]["max_face_px"] = max(rep[c]["max_face_px"], int(w[2]))
+        if seed:
+            x0, y0, x1, y1 = region_px(seed_rect, src_w, src_h)
+            gray = cv2.cvtColor(fr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+            seed["strict"] += best_face(casc, gray) is not None
+            w = wide_face(cascades, gray)
+            if w is not None:
+                seed["wide"] += 1
+                seed["max_face_px"] = max(seed["max_face_px"], int(w[2]))
         if n >= max_frames:
             break
     if out_jpg and thumbs:
+        pick = sorted({int(round(i * (len(thumbs) - 1) / 5)) for i in range(6)}) if len(thumbs) > 1 else [0]
+        tiles = [thumbs[i] for i in pick]
         h, w = thumbs[0].shape[:2]
-        sheet = np.zeros((h * 2, w * 2, 3), np.uint8)
-        for i, th in enumerate(thumbs):
+        rows = (len(tiles) + 1) // 2
+        sheet = np.zeros((h * rows, w * 2, 3), np.uint8)
+        for i, th in enumerate(tiles):
             sheet[(i // 2) * h:(i // 2 + 1) * h, (i % 2) * w:(i % 2 + 1) * w] = th
-        cv2.imwrite(out_jpg, sheet, [cv2.IMWRITE_JPEG_QUALITY, 70])
-    return {"frames": n, "corners": rep, "min_hits_needed_pct": round(100 * MIN_FACE_HITS)}
+        cv2.imwrite(out_jpg, sheet, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        stem = out_jpg.rsplit("source_contact", 1)[0] if "source_contact" in out_jpg else out_jpg.rsplit(".", 1)[0] + "_"
+        for i, fr in enumerate(native):
+            cv2.imwrite(f"{stem}source_frame_{i}.jpg", fr, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    for v in rep.values():
+        v["strict_pct"] = round(100 * v["strict"] / n, 1) if n else 0.0
+        v["wide_pct"] = round(100 * v["wide"] / n, 1) if n else 0.0
+    out = {"frames": n, "window_s": [round(start, 2), round(start + dur, 2)], "source": [src_w, src_h],
+           "corners": rep, "min_hits_needed_pct": round(100 * MIN_FACE_HITS)}
+    if seed:
+        seed["wide_pct"] = round(100 * seed["wide"] / n, 1) if n else 0.0
+        out["seed"] = seed
+    return out
 
 
 def choose_cam(faces, n, src_w, src_h, min_hits=MIN_FACE_HITS, max_spread=0.2):

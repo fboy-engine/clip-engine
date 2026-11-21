@@ -160,7 +160,7 @@ def check_layout(m):
     if lay == "cam_top":
         from .layout import CAM_H, PANEL_H
         return _c(name, PASS if PANEL_H > CAM_H else FAIL,
-                  f"cam {cb.get('corner')} (face in {cb.get('face_hit_pct')}% of samples), cam block {CAM_H}px "
+                  f"cam {cb.get('corner')} ({(r.get('cam') or {}).get('how')}; face in {cb.get('face_hit_pct')}% of samples), cam block {CAM_H}px "
                   f"({cb.get('box_px')} px source, x{cb.get('upscale')} upscale), panel {PANEL_H}px")
     if lay == "full":
         return _c(name, WARN, "no facecam found: gameplay-only 9:16 layout (reported, not hidden)")
@@ -306,9 +306,11 @@ def key_numbers(m):
             ]
     dg = r.get("cam_diag") or {}
     if dg.get("corners"):
-        rows.append("cam diagnostics (frames with a face, strict/relaxed of %s): " % dg.get("frames")
-                    + "; ".join(f"{c} {v['strict']}/{v['relaxed']} (max face {v['max_face_px']} px)"
-                                for c, v in dg["corners"].items()))
+        rows.append("cam diagnostics (frames with a face, strict/relaxed/wide of %s): " % dg.get("frames")
+                    + "; ".join(f"{c} {v['strict']}/{v['relaxed']}/{v.get('wide', '-')} (max face {v['max_face_px']} px)"
+                                for c, v in dg["corners"].items())
+                    + ((f"; seed rect {dg['seed']['rect']}: wide {dg['seed']['wide']} ({dg['seed'].get('wide_pct')}%)")
+                       if dg.get("seed") else ""))
     elif dg.get("error"):
         rows.append("cam diagnostics failed: " + str(dg["error"]))
     oc = (r.get("trim") or {}).get("opening_check")

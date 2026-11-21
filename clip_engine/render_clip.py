@@ -291,6 +291,51 @@ def shown_opening(media, s_f, fps, box, src_w):
     return (t is not None and t < 0.06), t, info
 
 
+def seeded_cam(media, s_f, dur, cam_rect, src_w, src_h, log):
+    """The cam region a person pointed at. The relaxed wide-scale detector looks for the face inside it; with
+    3+ hits the cam block follows the face, otherwise it shows the region itself (static). Either way it is
+    reported as user-seeded, never as face-verified."""
+    rect = tuple(float(v) for v in cam_rect)
+    obs, n = vision.faces_in_rect(media, s_f, dur, rect, src_w, src_h)
+    cx, cy = (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2
+    corner = ("top" if cy < 0.5 else "bottom") + "-" + ("left" if cx < 0.5 else "right")
+    hit = round(100 * len(obs) / n, 1) if n else 0.0
+    if len(obs) >= 3:
+        how = "user-seeded, face-tracked"
+    else:
+        wpx = (rect[2] - rect[0]) * src_w
+        obs, how = [(0.0, cx * src_w, cy * src_h, wpx / layout.FACE_BOX_FACTOR)], "user-seeded, static region (no face found)"
+    log(f"cam seeded from rect {rect}: {how}, relaxed face hits {hit}% of {n} samples")
+    return {"corner": corner, "obs": obs, "hit_pct": hit, "rect": rect, "how": how}
+
+
+def write_cam_diag(media, start, end, src_w, src_h, out_dir, cam_rect, log):
+    """out/cam_diag.json and out/source_contact.jpg (+ native source_frame_N.jpg): written before any gate can fail."""
+    try:
+        diag = vision.cam_diag(media, start, max(end - start, 1.0), src_w, src_h,
+                               os.path.join(out_dir, "source_contact.jpg"), seed_rect=cam_rect)
+    except Exception as e:
+        diag = {"error": f"{type(e).__name__}: {str(e)[:160]}"}
+    with open(os.path.join(out_dir, "cam_diag.json"), "w") as f:
+        json.dump(diag, f, indent=1)
+    log("cam diag: " + "; ".join(diag_lines(diag)))
+    return diag
+
+
+def diag_lines(dg):
+    """One short line per corner (strict/relaxed/wide face hits, % of frames) for logs and the run summary."""
+    if not dg or dg.get("error"):
+        return ["cam diagnostics failed: " + str((dg or {}).get("error"))]
+    rows = [f"{c}: strict {v['strict']}/{dg['frames']} ({v.get('strict_pct')}%), relaxed {v['relaxed']}, "
+            f"wide {v.get('wide')} ({v.get('wide_pct')}%), max face {v['max_face_px']} px"
+            for c, v in dg.get("corners", {}).items()]
+    if dg.get("seed"):
+        sd = dg["seed"]
+        rows.append(f"seed rect {sd['rect']}: strict {sd['strict']}, wide {sd['wide']} ({sd.get('wide_pct')}%), "
+                    f"max face {sd['max_face_px']} px")
+    return rows
+
+
 # ---- the render ----------------------------------------------------------
 
 def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=None, words=None,
@@ -301,6 +346,8 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
     pr = download.probe_media(media)
     src_w, src_h, fps = pr["width"], pr["height"], pr["fps"]
     notes, timings = [], {}
+    # cam diagnostics FIRST, on the whole moment, written even when the render fails later
+    diag = write_cam_diag(media, start, min(end, pr["duration"] - 0.05), src_w, src_h, out_dir, cam_rect, log)
     meta = None
     if words is None:
         words, meta = transcribe_words(media, start, end, model, cache_dir)
@@ -333,7 +380,7 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         # one sampling pass: faces for the cam block, small frames for the subject tracker
         t = time.monotonic()
         mode = (cam_corner or "auto").strip().lower()
-        if mode == "none":
+        if mode == "none" or cam_rect:        # a given rect is trusted as the cam region (seed): no corner search
             corners = []
         elif cam_layout.norm_corner(mode):
             corners = [cam_layout.norm_corner(mode)]
@@ -341,6 +388,9 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
             corners = list(vision.CORNER_SEARCH)
         smp = vision.sample(media, s_f, dur, src_w, src_h, corners)
         cam, cam_search = vision.choose_cam(smp["faces"], smp["n"], src_w, src_h) if corners else (None, {})
+        if cam_rect and mode != "none":
+            cam = seeded_cam(media, s_f, dur, cam_rect, src_w, src_h, log)
+            cam_search = {"seeded_by_person": True, "face_hit_pct": cam["hit_pct"]}
         use_cam = cam is not None
         if corners and not use_cam:
             notes.append("no facecam verified by face detection: gameplay-only layout")
@@ -377,7 +427,7 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         stats["cam_block"] = cam_info
         stats["panel"] = {"y0": layout.CAM_H if use_cam else 0, "h": layout.PANEL_H if use_cam else OUT_H}
         stats["cam"] = {"rect": list(rect) if rect else None, "corner": cam["corner"] if use_cam else None,
-                        "how": "face-verified" if use_cam else "none",
+                        "how": cam.get("how", "face-verified") if use_cam else "none",
                         "excluded": not any(cam_layout.visible_in_crop(rect, b[0], b[2], src_w) for b in bxs)}
         timings["track_sec"] = round(time.monotonic() - t, 1)
         del smp
@@ -414,13 +464,6 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
                           encode_cmd(media, s_f, dur, ass_path, out_path, fps, af, preset=preset),
                           os.path.join(out_dir, "encode.log"), cbx)
     timings["render_sec"] = round(time.monotonic() - t, 1)
-
-    try:    # why no cam? written next to the clip; never changes the layout decision
-        diag = vision.cam_diag(media, s_f, dur, src_w, src_h, os.path.join(out_dir, "source_contact.jpg"))
-    except Exception as e:
-        diag = {"error": f"{type(e).__name__}: {str(e)[:160]}"}
-    with open(os.path.join(out_dir, "cam_diag.json"), "w") as f:
-        json.dump(diag, f, indent=1)
 
     r = {"source": {"width": src_w, "height": src_h, "fps": fps, "duration": pr["duration"]},
          "asked": {"start": start, "end": end}, "cut": {"start": s_f, "end": round(s_f + dur, 3), "duration": round(dur, 4), "frames": n},

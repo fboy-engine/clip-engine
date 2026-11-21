@@ -52,6 +52,22 @@ on:
       gemini_model:
         description: Gemini model to try FIRST (empty = newest flash from ListModels)
         default: ""
+      render:
+        description: Render ONE clip from render_start-render_end (seconds in the window file), grade it
+        type: boolean
+        default: false
+      render_start:
+        description: Clip start, seconds in the window file (the find report's "file" times)
+        default: "0"
+      render_end:
+        description: Clip end, seconds in the window file
+        default: "0"
+      hook_text:
+        description: Cold-open hook caption (max 6 words; empty = pick a line from the speech)
+        default: ""
+      cam_corner:
+        description: Facecam corner to keep out of the crop (bottom-left, bottom-right, top-left, top-right; empty = none)
+        default: ""
       cache_only:
         description: Fail instead of downloading if the source cache misses
         type: boolean
@@ -181,7 +197,7 @@ jobs:
           name: dl-check-${{ github.run_id }}
           path: out/probe.json
       - name: Whisper cache key (find reuses the tiny-small-large-v3 cache)
-        if: ${{ inputs.transcribe_models != '' || inputs.find }}
+        if: ${{ inputs.transcribe_models != '' || inputs.find || inputs.render }}
         id: wk
         env:
           MODELS: ${{ inputs.transcribe_models }}
@@ -189,14 +205,14 @@ jobs:
           M="${MODELS:-tiny,small,large-v3}"
           echo "key=whisper-$(echo "$M" | tr ',' '-')-v1" >> "$GITHUB_OUTPUT"
       - name: Cache whisper models
-        if: ${{ inputs.transcribe_models != '' || inputs.find }}
+        if: ${{ inputs.transcribe_models != '' || inputs.find || inputs.render }}
         uses: actions/cache@v4
         with:
           path: ~/.cache/clip-engine/models
           key: ${{ steps.wk.outputs.key }}
           restore-keys: whisper-
       - name: Install faster-whisper
-        if: ${{ inputs.transcribe_models != '' || inputs.find }}
+        if: ${{ inputs.transcribe_models != '' || inputs.find || inputs.render }}
         timeout-minutes: 6
         run: |
           echo "$(date +%T) pip faster-whisper"
@@ -232,6 +248,38 @@ jobs:
           FIND_MODEL: ${{ inputs.find_model }}
           FIND_TOP: ${{ inputs.find_top }}
         run: python -m clip_engine.cli find out/source.mp4 --offset "$START" --model "$FIND_MODEL" --top "$FIND_TOP" --out out
+      - name: Install opencv (render only)
+        if: ${{ inputs.render }}
+        timeout-minutes: 5
+        run: |
+          timeout 240 pip install -q --default-timeout 30 --retries 2 opencv-python-headless
+          python -c "import cv2; print('opencv', cv2.__version__)"
+      - name: Render clip (tracked 9:16 crop, captions, hook, -14 LUFS) and grade it
+        if: ${{ inputs.render }}
+        timeout-minutes: 25
+        env:
+          HF_HUB_DISABLE_PROGRESS_BARS: "1"
+          RSTART: ${{ inputs.render_start }}
+          REND: ${{ inputs.render_end }}
+          HOOK: ${{ inputs.hook_text }}
+          CAM: ${{ inputs.cam_corner }}
+        run: |
+          ARGS=""; [ -n "$CAM" ] && ARGS="--cam-corner $CAM"
+          python -m clip_engine.cli render out/source.mp4 --start "$RSTART" --end "$REND" --hook "$HOOK" $ARGS --out out
+      - name: Upload the clip (MP4, render/grade json, review frames)
+        if: ${{ always() && inputs.render }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: clip-${{ github.run_id }}
+          path: |
+            out/clip.mp4
+            out/clip.ass
+            out/render.json
+            out/grade.json
+            out/encode.log
+            out/review/*.jpg
+          retention-days: 14
+          if-no-files-found: warn
       - name: Upload candidates (json only, no video)
         if: ${{ always() && inputs.find }}
         uses: actions/upload-artifact@v4

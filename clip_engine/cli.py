@@ -106,6 +106,39 @@ def cmd_find(a):
         return 1
 
 
+def _grade_out(out):
+    from . import grade_checks, grade_clip
+    p = lambda n: os.path.join(out, n)
+    m, checks = grade_clip.grade(p("clip.mp4"), p("render.json"), p("clip.ass"), out)
+    text = grade_checks.format_report(checks)
+    print(text)
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a") as f:
+            f.write("### Clip grade\n```\n" + text + "\n```\n")
+    return 1 if grade_checks.failed(checks) else 0
+
+
+def cmd_render(a):
+    from . import render_clip
+    rect = [float(x) for x in a.cam_rect.split(",")] if a.cam_rect else None
+    try:
+        render_clip.render(a.media, a.start, a.end, a.out, a.hook, a.cam_corner, rect,
+                           model=a.model, cache_dir=a.cache_dir)
+    except Exception as e:  # report the real failure, never fake a pass
+        print(f"FAIL render: {type(e).__name__}: {str(e)[:400]}")
+        return 1
+    return _grade_out(a.out)
+
+
+def cmd_grade(a):
+    try:
+        return _grade_out(a.out)
+    except Exception as e:
+        print(f"FAIL grade: {type(e).__name__}: {str(e)[:400]}")
+        return 1
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="clip_engine")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -139,6 +172,20 @@ def main(argv=None):
     fd.add_argument("--cache-dir", dest="cache_dir", default=transcribe_default_cache())
     fd.add_argument("--out", default="out")
     fd.set_defaults(fn=cmd_find)
+    r = sub.add_parser("render")
+    r.add_argument("media")
+    r.add_argument("--start", type=float, required=True, help="clip start, seconds in the media file")
+    r.add_argument("--end", type=float, required=True)
+    r.add_argument("--hook", default="")
+    r.add_argument("--cam-corner", dest="cam_corner", default=None)
+    r.add_argument("--cam-rect", dest="cam_rect", default=None, help="x0,y0,x1,y1 fractions")
+    r.add_argument("--model", default="large-v3")
+    r.add_argument("--cache-dir", dest="cache_dir", default=transcribe_default_cache())
+    r.add_argument("--out", default="out")
+    r.set_defaults(fn=cmd_render)
+    g = sub.add_parser("grade")
+    g.add_argument("--out", default="out")
+    g.set_defaults(fn=cmd_grade)
     a = p.parse_args(argv)
     return a.fn(a)
 

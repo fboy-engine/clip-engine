@@ -28,3 +28,25 @@ def motion_gate(series, floor=0.003, min_active=0.6, max_static_run=5):
         best = max(best, run)
     ok = active.mean() >= min_active and best <= max_static_run
     return bool(ok), f"{active.mean() * 100:.0f}% of seconds moving, longest static run {best}s"
+
+
+def opening_gate(frames, fps, floor=0.0025, frozen=0.0010, max_frozen_s=0.35, min_active=0.6):
+    """(ok, detail, info) on the first seconds of the gameplay panel (gray stack, n frames at fps).
+    Fails on a frozen picture or an opening that barely moves."""
+    f = np.asarray(frames, dtype=np.float32) / 255.0
+    if len(f) < 3:
+        return False, "no frames in the opening", {}
+    d = np.abs(np.diff(f, axis=0)).mean(axis=(1, 2))
+    run = best = 0
+    for v in d < frozen:
+        run = run + 1 if v else 0
+        best = max(best, run)
+    frozen_s = best / fps
+    active = float((d >= floor).mean())
+    first = next((i for i, v in enumerate(d) if v >= floor), None)
+    info = {"longest_frozen_s": round(frozen_s, 2), "active_pct": round(100 * active, 1),
+            "first_motion_s": None if first is None else round((first + 1) / fps, 2),
+            "secs": round(len(f) / fps, 1)}
+    ok = frozen_s <= max_frozen_s and active >= min_active
+    return bool(ok), (f"first {info['secs']} s: longest frozen {info['longest_frozen_s']} s, "
+                      f"{info['active_pct']}% of steps moving, first motion at {info['first_motion_s']} s"), info

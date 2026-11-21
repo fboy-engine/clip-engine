@@ -120,3 +120,11 @@ class EndToEnd(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ColorTags(unittest.TestCase):
+    def test_vf_sets_all_bt709_tags_on_the_frames(self):
+        cmd = rc.encode_cmd("m.mp4", 1.0, 30.0, "c.ass", "o.mp4", 60.0, "anull")
+        vf = cmd[cmd.index("-vf") + 1]
+        for tag in ("color_primaries=bt709", "color_trc=bt709", "colorspace=bt709", "range=tv"):
+            self.assertIn(tag, vf)

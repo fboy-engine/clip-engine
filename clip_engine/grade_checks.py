@@ -210,8 +210,51 @@ def check_motion(m):
     return _c("motion gate", PASS if v["ok"] else FAIL, v["detail"])
 
 
+def check_opening(m):
+    o = m.get("opening")
+    name = "opening: no freeze, real motion (first 3 s)"
+    if not o or o.get("error"):
+        return _c(name, WARN, "not measured: " + str((o or {}).get("error", "not run")))
+    return _c(name, PASS if o["ok"] else FAIL, o["detail"])
+
+
+def check_cold_open(m):
+    c = m.get("cold_open") or {}
+    name = "cold open: sound from the first frames"
+    on = c.get("onset_s")
+    if on is None:
+        return _c(name, WARN, "not measurable (too little audio)")
+    detail = f"sound at {on:.2f} s (first 0.3 s {c.get('first_db')} dB vs median {c.get('median_db')} dB)"
+    return _c(name, PASS if on <= 0.3 else WARN if on <= 0.6 else FAIL, detail)
+
+
+def check_ending(m):
+    name = "ending: lands on a payoff, no mid-word cut"
+    spans = m.get("word_spans") or []
+    dur = (m.get("video") or {}).get("duration") or 0
+    why = ((m.get("render") or {}).get("trim") or {}).get("end_reason", "")
+    if not spans or not dur:
+        return _c(name, WARN, "no word times to check the ending against")
+    if any(s < dur - 0.03 < e for s, e in spans):
+        return _c(name, FAIL, "the clip ends in the middle of a word")
+    tail = dur - spans[-1][1]
+    detail = f"{tail:.2f} s after the last word; {why}"
+    return _c(name, WARN if tail > 1.6 else PASS, detail + ("; long dead tail" if tail > 1.6 else ""))
+
+
+def check_hook_match(m):
+    h = (m.get("render") or {}).get("hook") or {}
+    name = "hook matches the first seconds"
+    if h.get("match") is True:
+        return _c(name, PASS, f"{h.get('source')}: \"{h.get('text')}\"")
+    if h.get("source") == "given_unverified":
+        return _c(name, WARN, f"\"{h.get('text')}\" is not spoken in the first 3 s (fine only if it is shown on screen)")
+    return _c(name, WARN, "no hook that matches the first 3 s")
+
+
 ALL = (check_video, check_duration, check_trim, check_crf, check_loudness, check_balance, check_audio_added,
-       check_hook, check_captions, check_layout, check_subject, check_crop, check_visual, check_motion)
+       check_hook, check_hook_match, check_opening, check_cold_open, check_ending, check_captions, check_layout,
+       check_subject, check_crop, check_visual, check_motion)
 
 
 def run_all(m):
@@ -242,6 +285,10 @@ def key_numbers(m):
             f"voice {b.get('voice_db')} dB vs loud peaks {b.get('loud_db')} dB (gap {b.get('gap_db')})",
             f"layout {r.get('layout')}; cam found: {'yes' if cb.get('found') else 'NO'}"
             + (f" ({cb.get('corner')}, face in {cb.get('face_hit_pct')}%, x{cb.get('upscale')} upscale)" if cb.get("found") else ""),
+            f"cut in {(m.get('cut') or {}).get('start')} s -> out {(m.get('cut') or {}).get('end')} s of the window file; "
+            f"end: {((r.get('trim') or {}).get('end_reason'))}",
+            f"opening freeze check: {(m.get('opening') or {}).get('detail', 'not measured')} "
+            f"({'ok' if (m.get('opening') or {}).get('ok') else 'FAIL/unmeasured'})",
             f"subject in frame: {o.get('inside_pct')}% of detected ({o.get('detected_pct')}% of {o.get('samples')} samples); "
             f"render-time plan {((r.get('subject') or {}).get('inside_pct'))}%"]
     return "\n".join(rows)

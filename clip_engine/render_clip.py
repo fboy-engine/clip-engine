@@ -14,13 +14,15 @@ from fractions import Fraction
 
 import numpy as np
 
-from . import (asr_fix, caption_lane, captions, cam_layout, config, download, hooks, layout, select_clean,
-               subject, track, transcribe, vision)
+from . import (asr_fix, balance, caption_lane, captions, cam_layout, config, download, hooks, layout, select_clean,
+               subject, track, transcribe, trim, vision)
 from .cropplan import punch_curve, smooth
 
 OUT_W, OUT_H = config.OUT_W, config.OUT_H
 GRAY_FPS, GRAY_W, GRAY_H = 4, 64, 36
 FADE = 0.012
+END_FADE = 0.15       # short fade out at the end (0.1-0.2 s is fine; no long fade to silence)
+MOTION_FPS = 20
 NOMINAL_CAM = layout.NOMINAL_CAM
 GLOSSARY = {"lucia": "Lucia"}
 
@@ -141,7 +143,9 @@ def decode_cmd(media, start, n, fps):
 
 
 def encode_cmd(media, start, dur, ass_path, out_path, fps, af, crf=config.CRF, preset=config.PRESET):
-    vf = f"ass={ass_path},scale=out_color_matrix=bt709:out_range=tv,format=yuv420p"
+    # setparams writes primaries/transfer on the frames; the -color_* options alone left them "unknown" (ffmpeg 8)
+    vf = (f"ass={ass_path},scale=out_color_matrix=bt709:out_range=tv,"
+          "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv,format=yuv420p")
     return ["ffmpeg", "-hide_banner", "-nostdin", "-y",
             "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{OUT_W}x{OUT_H}", "-r", fps_arg(fps), "-i", "-",
             "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", media,
@@ -220,10 +224,56 @@ def transcribe_words(media, start, end, model_name, cache_dir, pad=2.0, beam=5, 
     return words, meta
 
 
+def decode_gray_at(media, start, dur, fps, w=96, h=54):
+    cmd = ["ffmpeg", "-v", "error", "-nostdin", "-ss", f"{start:.3f}", "-i", media, "-t", f"{dur:.3f}", "-an",
+           "-vf", f"fps={fps},scale={w}:{h}:flags=area,format=gray", "-f", "rawvideo", "-"]
+    p = subprocess.run(cmd, capture_output=True)
+    if p.returncode != 0:
+        raise RuntimeError("gray decode failed: " + p.stderr.decode(errors="replace")[-300:])
+    buf = np.frombuffer(p.stdout, dtype=np.uint8)
+    n = len(buf) // (w * h)
+    return buf[:n * w * h].reshape(n, h, w)
+
+
+def plan_cut(media, pr, start, end, words, cam_corner, cam_rect, payoff, notes, log):
+    """Cut points: first real motion (with sound) at/after `start`; a payoff end at/before `end`.
+    Returns (in_s, out_s, trim_info). Raises when the moment has no honest start or end."""
+    src_w, src_h = pr["width"], pr["height"]
+    env_end = min(end, pr["duration"] - 0.05)
+    if env_end - start < config.MIN_LEN:
+        raise ValueError(f"envelope {start:g}-{end:g}s is shorter than {config.MIN_LEN:g} s")
+    # facecam on a short pilot sample so its constant motion does not hide a frozen game picture
+    rect, mode = (tuple(cam_rect) if cam_rect else None), (cam_corner or "auto").strip().lower()
+    if rect is None and mode != "none":
+        corners = [cam_layout.norm_corner(mode)] if cam_layout.norm_corner(mode) else list(vision.CORNER_SEARCH)
+        smp = vision.sample(media, start, min(10.0, env_end - start), src_w, src_h, corners)
+        cam, _ = vision.choose_cam(smp["faces"], smp["n"], src_w, src_h)
+        rect = cam["rect"] if cam else None
+        del smp
+    gray = decode_gray_at(media, start, trim.START_SEARCH + 2.0, MOTION_FPS)
+    d = trim.motion_diffs(gray, rect)
+    pcm = transcribe.decode_pcm(media, start, env_end)
+    rms = balance.rms_db(pcm, transcribe.SR, 0.05)
+    off, sinfo = trim.choose_start(d, MOTION_FPS, rms, 0.05)
+    if off is None:
+        raise ValueError(f"no real motion with sound in {trim.START_SEARCH:g} s after {start:g}s "
+                         f"(frozen or silent opening): skip this moment ({sinfo})")
+    t0, snote = trim.snap_start_forward(words, start + off)
+    if snote:
+        notes.append(snote)
+    lo, hi = t0 + config.MIN_LEN, min(t0 + config.MAX_LEN, env_end)
+    t1, why, enotes = trim.payoff_end(words, t0, lo, hi, rms, 0.05, payoff, rms_t0=start)
+    notes += enotes
+    info = {"asked": [start, end], "in": round(t0, 3), "out": round(t1, 3), "start_motion": sinfo,
+            "start_note": snote, "end_reason": why, "facecam_masked": bool(rect)}
+    log(f"trim: in {t0:.2f}s (asked {start:g}, first motion +{off:.2f}s), out {t1:.2f}s: {why}")
+    return t0, t1, info
+
+
 # ---- the render ----------------------------------------------------------
 
 def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=None, words=None,
-           model="large-v3", cache_dir=None, preset=config.PRESET, log=print):
+           model="large-v3", cache_dir=None, preset=config.PRESET, log=print, payoff=""):
     """Returns the render.json dict (also written to out_dir). Raises on anything it cannot do honestly."""
     os.makedirs(out_dir, exist_ok=True)
     t0 = time.monotonic()
@@ -235,8 +285,7 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         words, meta = transcribe_words(media, start, end, model, cache_dir)
         timings["asr_sec"] = meta["transcribe_sec"]
     words = asr_fix.fix_words(words, GLOSSARY)
-    s_c, e_c, cn = select_clean.select_clean(words, start, end)
-    notes += cn
+    s_c, e_c, trim_info = plan_cut(media, pr, start, end, words, cam_corner, cam_rect, payoff, notes, log)
     s_f, n, dur = frame_window(s_c, e_c, fps)
     if not (config.MIN_LEN <= dur <= config.MAX_LEN):
         raise ValueError(f"clip would be {dur:.1f} s, outside {config.MIN_LEN:g}-{config.MAX_LEN:g} s")
@@ -250,12 +299,12 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         w["e"] = min(w["e"], dur)
     lane = caption_lane.lanes(False)
     ass = captions.to_ass(cw, 0.0, OUT_W, OUT_H, lane["caption_margin_v"])
-    hook, hook_src = hooks.pick_hook(hook_text, cw)
+    hook, hook_src, hook_match = hooks.choose_hook(hook_text, cw)
     ass = hooks.add_hook(ass, hook, lane["hook_margin_v"])
     ass_path = os.path.join(out_dir, "clip.ass")
     with open(ass_path, "w") as f:
         f.write(ass)
-    log(f"hook: {hook!r} ({hook_src}); {len(cw)} caption words")
+    log(f"hook: {hook!r} ({hook_src}, matches first 3 s: {hook_match}); {len(cw)} caption words")
 
     # one sampling pass: faces for the cam block, small frames for the subject tracker
     t = time.monotonic()
@@ -314,9 +363,9 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
 
     # audio: measure, then normalise to -14 LUFS (stream audio only)
     t = time.monotonic()
-    p = subprocess.run(loudnorm_measure_cmd(media, s_f, dur), capture_output=True, text=True)
+    p = subprocess.run(loudnorm_measure_cmd(media, s_f, dur, END_FADE), capture_output=True, text=True)
     ln = parse_loudnorm(p.stderr)
-    af = loudnorm_filter(dur, ln)
+    af = loudnorm_filter(dur, ln, END_FADE)
     log(f"audio: input {ln['input_i']:.1f} LUFS, tp {ln['input_tp']:.1f} dBFS -> target {config.TARGET_LUFS:g}")
     timings["loudnorm_sec"] = round(time.monotonic() - t, 1)
 
@@ -328,13 +377,14 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
     timings["render_sec"] = round(time.monotonic() - t, 1)
 
     r = {"source": {"width": src_w, "height": src_h, "fps": fps, "duration": pr["duration"]},
-         "asked": {"start": start, "end": end}, "cut": {"start": s_f, "duration": round(dur, 4), "frames": n},
+         "asked": {"start": start, "end": end}, "cut": {"start": s_f, "end": round(s_f + dur, 3), "duration": round(dur, 4), "frames": n},
          "expected": {"frames": n, "duration": round(dur, 4), "source_fps": fps}, "short_frames": short,
-         "hook": {"text": hook, "source": hook_src}, "words": len(cw), "asr": meta, "notes": notes,
+         "hook": {"text": hook, "source": hook_src, "match": hook_match}, "trim": trim_info, "words": len(cw), "asr": meta, "notes": notes,
          "word_spans": [[round(w["s"], 3), round(w["e"], 3)] for w in cw],
          "crop_points": pts, "loudnorm_input": ln, "timings": timings,
          "encode": {"codec": "libx264", "crf": config.CRF, "preset": preset},
-         "grade_inputs": {"audio_inputs": 1, "audio_filters": list(AUDIO_FILTERS), **stats}}
+         "grade_inputs": {"audio_inputs": 1, "audio_filters": list(AUDIO_FILTERS), "trim": trim_info,
+                          "hook": {"text": hook, "source": hook_src, "match": hook_match}, **stats}}
     with open(os.path.join(out_dir, "render.json"), "w") as f:
         json.dump(r, f, indent=1)
     timings["total_sec"] = round(time.monotonic() - t0, 1)

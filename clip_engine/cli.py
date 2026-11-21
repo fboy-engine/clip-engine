@@ -137,7 +137,7 @@ def cmd_render(a):
     rect = [float(x) for x in a.cam_rect.split(",")] if a.cam_rect else None
     try:
         render_clip.render(a.media, a.start, a.end, a.out, a.hook, a.cam_corner, rect,
-                           model=a.model, cache_dir=a.cache_dir)
+                           model=a.model, cache_dir=a.cache_dir, payoff=a.payoff)
     except Exception as e:  # report the real failure, never fake a pass
         msg = f"FAIL render: {type(e).__name__}: {str(e)[:400]}"
         print(msg)
@@ -198,6 +198,7 @@ def main(argv=None):
     r.add_argument("--hook", default="")
     r.add_argument("--cam-corner", dest="cam_corner", default=None)
     r.add_argument("--cam-rect", dest="cam_rect", default=None, help="x0,y0,x1,y1 fractions")
+    r.add_argument("--payoff", default="", help="phrase the clip should end on (fuzzy match in the transcript)")
     r.add_argument("--model", default="large-v3")
     r.add_argument("--cache-dir", dest="cache_dir", default=transcribe_default_cache())
     r.add_argument("--out", default="out")

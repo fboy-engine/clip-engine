@@ -107,13 +107,23 @@ def subject_output(clip, y0, h, fps=2, w_out=540):
     return subject.summarize_output(subject.classify_output(dets, w_out), times)
 
 
+def opening_frames(clip, y0, h, secs=3.0, fps=10, w=72, hh=92):
+    """Gray frames of the first `secs` of the gameplay panel only (the facecam always moves)."""
+    p = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", clip, "-t", f"{secs:g}", "-an", "-vf",
+                        f"crop=1080:{h}:0:{y0},fps={fps},scale={w}:{hh}:flags=area,format=gray", "-f", "rawvideo", "-"],
+                       capture_output=True)
+    buf = np.frombuffer(p.stdout, dtype=np.uint8)
+    n = len(buf) // (w * hh)
+    return buf[:n * w * hh].reshape(n, hh, w)
+
+
 def review_frames(path, out_dir, duration, times=REVIEW_TIMES):
     os.makedirs(out_dir, exist_ok=True)
     made = []
     for i, t in enumerate([x for x in times if x < duration - 0.2] + [max(duration - 0.4, 0)]):
         o = os.path.join(out_dir, f"r{i}_{t:05.1f}s.jpg")
         _run(["ffmpeg", "-v", "error", "-nostdin", "-y", "-ss", f"{t:.2f}", "-i", path, "-frames:v", "1",
-              "-vf", "scale=540:-2", "-q:v", "3", o])
+              "-vf", "scale=1080:-2", "-q:v", "2", o])
         if os.path.exists(o):
             made.append(o)
     return made
@@ -129,14 +139,22 @@ def grade(clip, render_json, ass_path, out_dir):
     m["visual"] = dict(zip(("ok", "detail"), gates.visual_gate(gray_frames(clip, 2, 108, 192))))
     series = analyze.motion_series(gray_frames(clip, 4, 54, 96), fps=4)
     m["motion"] = dict(zip(("ok", "detail"), gates.motion_gate(series)))
+    pan = r["grade_inputs"].get("panel") or {"y0": 0, "h": 1920}
     try:
-        pan = r["grade_inputs"].get("panel") or {"y0": 0, "h": 1920}
+        ok, detail, info = gates.opening_gate(opening_frames(clip, pan["y0"], pan["h"]), 10)
+        m["opening"] = {"ok": ok, "detail": detail, **info}
+    except Exception as e:
+        m["opening"] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
+    m["word_spans"] = r.get("word_spans", [])
+    m["cut"] = r.get("cut")
+    try:
         m["subject_out"] = subject_output(clip, pan["y0"], pan["h"])
     except Exception as e:      # cv2 missing etc.: say so, never pass by default
         m["subject_out"] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
     try:
         pcm = transcribe.decode_pcm(clip, 0.0, video["duration"])
         m["balance"] = balance.balance(pcm, transcribe.SR, r.get("word_spans", []))
+        m["cold_open"] = balance.cold_open(pcm, transcribe.SR)
     except Exception as e:
         m["balance"] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
     checks = grade_checks.run_all(m)

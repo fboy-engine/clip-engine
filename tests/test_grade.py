@@ -15,12 +15,18 @@ GOOD = {
                "layout": "cam_top", "subject": {"inside_pct": 99.0, "tracked_pct": 80.0},
                "cam_block": {"found": True, "corner": "bottom-left", "face_hit_pct": 88.0, "box_px": [504, 252], "upscale": 2.14},
                "crop_in_frame": True, "pan_max_px_s": 200.0, "pan_total_px": 300.0,
-               "cam": {"rect": [0, .6, .25, 1], "excluded": True, "how": "assumed"}},
+               "cam": {"rect": [0, .6, .25, 1], "excluded": True, "how": "assumed"},
+               "hook": {"text": "Everyone dies today!", "source": "given", "match": True},
+               "trim": {"end_reason": "payoff phrase matched"}},
     "ass": {"hook_start": 0.0, "hook_text": "Everyone dies today!", "caption_styles": ["Main"],
             "caption_lines": 12, "max_highlights": 1, "last_end": 37.5},
     "visual": {"ok": True, "detail": "ok"}, "motion": {"ok": True, "detail": "ok"},
     "subject_out": {"inside_pct": 98.0, "detected_pct": 80.0, "samples": 76, "cut_times": [], "unseen_times": []},
     "balance": {"voice_db": -22.0, "loud_db": -12.0, "gap_db": 10.0},
+    "opening": {"ok": True, "detail": "first 3.0 s: longest frozen 0.0 s, 100% of steps moving, first motion at 0.1 s"},
+    "cold_open": {"onset_s": 0.0, "first_db": -20.0, "median_db": -22.0},
+    "word_spans": [[0.4, 1.0], [36.8, 37.5]],
+    "cut": {"start": 42.0, "end": 80.0},
 }
 
 

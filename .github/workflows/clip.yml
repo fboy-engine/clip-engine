@@ -65,6 +65,9 @@ on:
       hook_text:
         description: Cold-open hook caption (max 6 words; empty = pick a line from the speech)
         default: ""
+      payoff_phrase:
+        description: Phrase the clip should end on (empty = pick a payoff from audio and speech); render_end is the latest allowed end
+        default: ""
       cam_corner:
         description: Facecam corner (bottom-left, bottom-right, top-left, top-right), empty = auto-find by face detection, none = gameplay-only
         default: ""
@@ -267,9 +270,12 @@ jobs:
           REND: ${{ inputs.render_end }}
           HOOK: ${{ inputs.hook_text }}
           CAM: ${{ inputs.cam_corner }}
+          PAYOFF: ${{ inputs.payoff_phrase }}
         run: |
-          ARGS=""; [ -n "$CAM" ] && ARGS="--cam-corner $CAM"
-          python -m clip_engine.cli render out/source.mp4 --start "$RSTART" --end "$REND" --hook "$HOOK" $ARGS --out out
+          ARGS=()
+          [ -n "$CAM" ] && ARGS+=(--cam-corner "$CAM")
+          [ -n "$PAYOFF" ] && ARGS+=(--payoff "$PAYOFF")
+          python -m clip_engine.cli render out/source.mp4 --start "$RSTART" --end "$REND" --hook "$HOOK" "${ARGS[@]}" --out out
       - name: Upload the clip (MP4, render/grade json, review frames)
         if: ${{ always() && inputs.render }}
         uses: actions/upload-artifact@v4

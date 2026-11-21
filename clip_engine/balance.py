@@ -28,3 +28,16 @@ def balance(pcm, sr, spans, win=0.05, floor=-60.0):
         return {"voice_db": None, "loud_db": loud, "gap_db": None}
     v = float(np.median(voice))
     return {"voice_db": round(v, 1), "loud_db": loud, "gap_db": round(loud - v, 1)}
+
+
+def cold_open(pcm, sr, win=0.05, drop_db=12.0, floor=-60.0):
+    """How soon the sound is there. onset_s = first time the 50 ms RMS is within drop_db of the
+    clip's median level; a long silent ramp-in shows up as a late onset."""
+    r = rms_db(pcm, sr, win)
+    audible = r[r > floor] if r.size else r
+    if audible.size < 5:
+        return {"onset_s": None, "first_db": None, "median_db": None}
+    med = float(np.median(audible))
+    idx = np.where(r >= med - drop_db)[0]
+    return {"onset_s": round(float(idx[0] * win), 2) if idx.size else None,
+            "first_db": round(float(r[:6].mean()), 1), "median_db": round(med, 1)}

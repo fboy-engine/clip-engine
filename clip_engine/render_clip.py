@@ -14,14 +14,14 @@ from fractions import Fraction
 
 import numpy as np
 
-from . import asr_fix, caption_lane, captions, cam_layout, config, download, hooks, select_clean, track, transcribe
-from .cropplan import punch_curve
+from . import (asr_fix, caption_lane, captions, cam_layout, config, download, hooks, layout, select_clean,
+               subject, track, transcribe, vision)
+from .cropplan import punch_curve, smooth
 
 OUT_W, OUT_H = config.OUT_W, config.OUT_H
 GRAY_FPS, GRAY_W, GRAY_H = 4, 64, 36
 FADE = 0.012
-NOMINAL_CAM = {"bottom-left": (0.0, 0.62, 0.26, 1.0), "bottom-right": (0.74, 0.62, 1.0, 1.0),
-               "top-left": (0.0, 0.0, 0.26, 0.38), "top-right": (0.74, 0.0, 1.0, 0.38)}
+NOMINAL_CAM = layout.NOMINAL_CAM
 GLOSSARY = {"lucia": "Lucia"}
 
 
@@ -72,13 +72,13 @@ def per_frame_x(points, n, fps, bounds, smooth_sec=0.5):
     return np.clip(smooth_series(x, smooth_sec * fps), bounds[0], bounds[1])
 
 
-def boxes(xs, zs, src_w, src_h, lo=0.0):
-    """Per-frame source box (left, top, w, h): 9:16, shrinks around its centre by the punch-in."""
-    w0 = src_h * 9 / 16
+def boxes(xs, zs, src_w, src_h, lo=0.0, aspect=9 / 16):
+    """Per-frame source box (left, top, w, h) at `aspect`, shrinking around its centre by the punch-in."""
+    w0 = src_h * aspect
     out = []
     for x, z in zip(xs, zs):
         h = src_h / (1 + z)
-        w = h * 9 / 16
+        w = h * aspect
         left = min(max(x + w0 / 2 - w / 2, lo), src_w - w)
         out.append((float(left), float((src_h - h) / 2), float(w), float(h)))
     return out
@@ -102,14 +102,21 @@ def path_stats(bxs, fps, src_w, src_h, src_h0):
 
 # ---- audio ---------------------------------------------------------------
 
-def audio_pre(dur):
-    return f"afade=t=in:st=0:d={FADE},afade=t=out:st={max(dur - FADE, 0):.3f}:d={FADE}"
+# gentle level matching so gunfire does not bury speech (2.2:1 above -21 dB, slow release: no pumping),
+# and a ceiling limiter after loudnorm (0.84 linear = -1.5 dBFS)
+COMP = "acompressor=threshold=-21dB:ratio=2.2:attack=20:release=350:knee=6dB"
+LIMITER = "alimiter=limit=0.84:attack=5:release=60:level=disabled"
+AUDIO_FILTERS = ["afade", "acompressor", "loudnorm", "alimiter"]
 
 
-def loudnorm_measure_cmd(media, start, dur):
+def audio_pre(dur, fade_out=FADE):
+    return f"afade=t=in:st=0:d={FADE},afade=t=out:st={max(dur - fade_out, 0):.3f}:d={fade_out},{COMP}"
+
+
+def loudnorm_measure_cmd(media, start, dur, fade_out=FADE):
     ln = f"loudnorm=I={config.TARGET_LUFS:g}:TP={config.TRUE_PEAK:g}:LRA={config.LRA:g}:print_format=json"
     return ["ffmpeg", "-hide_banner", "-nostdin", "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", media,
-            "-vn", "-af", f"{audio_pre(dur)},{ln}", "-f", "null", "-"]
+            "-vn", "-af", f"{audio_pre(dur, fade_out)},{ln}", "-f", "null", "-"]
 
 
 def parse_loudnorm(text):
@@ -120,10 +127,10 @@ def parse_loudnorm(text):
     return {k: float(d[k]) for k in ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")}
 
 
-def loudnorm_filter(dur, m):
-    return (f"{audio_pre(dur)},loudnorm=I={config.TARGET_LUFS:g}:TP={config.TRUE_PEAK:g}:LRA={config.LRA:g}"
+def loudnorm_filter(dur, m, fade_out=FADE):
+    return (f"{audio_pre(dur, fade_out)},loudnorm=I={config.TARGET_LUFS:g}:TP={config.TRUE_PEAK:g}:LRA={config.LRA:g}"
             f":measured_I={m['input_i']}:measured_TP={m['input_tp']}:measured_LRA={m['input_lra']}"
-            f":measured_thresh={m['input_thresh']}:offset={m['target_offset']}:linear=true")
+            f":measured_thresh={m['input_thresh']}:offset={m['target_offset']}:linear=true,{LIMITER}")
 
 
 # ---- ffmpeg commands -----------------------------------------------------
@@ -146,9 +153,18 @@ def encode_cmd(media, start, dur, ass_path, out_path, fps, af, crf=config.CRF, p
             "-t", f"{dur:.3f}", "-movflags", "+faststart", out_path]
 
 
-def render_frames(media, start, n, fps, bxs, src_w, src_h, enc_cmd, enc_log):
+def sharpen(img, amount=0.35, sigma=1.2):
+    """Light unsharp for the upscaled cam block."""
+    import cv2
+    blur = cv2.GaussianBlur(img, (0, 0), sigma)
+    return cv2.addWeighted(img, 1 + amount, blur, -amount, 0)
+
+
+def render_frames(media, start, n, fps, bxs, src_w, src_h, enc_cmd, enc_log, cam_bxs=None):
+    """cam_bxs None: one full-height 9:16 crop. Otherwise cam block on top, gameplay panel below."""
     import cv2
     size = src_w * src_h * 3
+    panel_h = layout.PANEL_H if cam_bxs else OUT_H
     dec = subprocess.Popen(decode_cmd(media, start, n, fps), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     with open(enc_log, "w") as log:
         enc = subprocess.Popen(enc_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log)
@@ -162,8 +178,12 @@ def render_frames(media, start, n, fps, bxs, src_w, src_h, enc_cmd, enc_log):
                     raise RuntimeError("decoder produced no frames")
                 else:
                     short += 1
-                out = cv2.warpAffine(last, affine(bxs[i]), (OUT_W, OUT_H), flags=cv2.INTER_LANCZOS4,
+                out = cv2.warpAffine(last, affine(bxs[i]), (OUT_W, panel_h), flags=cv2.INTER_LANCZOS4,
                                      borderMode=cv2.BORDER_REPLICATE)
+                if cam_bxs:
+                    cam = cv2.warpAffine(last, affine(cam_bxs[i]), (OUT_W, layout.CAM_H),
+                                         flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REPLICATE)
+                    out = np.vstack([sharpen(cam), out])
                 enc.stdin.write(out.tobytes())
         finally:
             enc.stdin.close()
@@ -237,30 +257,60 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         f.write(ass)
     log(f"hook: {hook!r} ({hook_src}); {len(cw)} caption words")
 
-    # facecam + tracked crop
+    # one sampling pass: faces for the cam block, small frames for the subject tracker
     t = time.monotonic()
-    gray = decode_gray(media, s_f, dur)
-    corner = cam_layout.norm_corner(cam_corner)
-    rect, how = None, "none"
-    if cam_rect:
-        rect, how = tuple(cam_rect), "given"
-    elif corner:
-        rect = cam_layout.static_rect(gray, corner, max_std=0.02)
-        how = "detected static block"
-        if not rect:
-            rect, how = NOMINAL_CAM[corner], "assumed nominal rect (no static block found)"
-            notes.append(f"facecam {corner} not measured; nominal rectangle assumed")
-    w0 = src_h * 9 / 16
-    bounds = cam_layout.crop_bounds(rect, src_w, w0)
-    plan = track.plan(gray, GRAY_FPS, src_w, src_h, mask_rect=rect, bounds=bounds)
-    xs = per_frame_x(plan["points"], n, fps, bounds)
-    zs = punch_curve(n, config.PUNCH_TARGET)
-    bxs = boxes(xs, zs, src_w, src_h, bounds[0])
+    mode = (cam_corner or "auto").strip().lower()
+    if mode == "none":
+        corners = []
+    elif cam_layout.norm_corner(mode):
+        corners = [cam_layout.norm_corner(mode)]
+    else:
+        corners = list(vision.CORNER_SEARCH)
+    smp = vision.sample(media, s_f, dur, src_w, src_h, corners)
+    cam, cam_search = vision.choose_cam(smp["faces"], smp["n"], src_w, src_h) if corners else (None, {})
+    use_cam = cam is not None
+    if corners and not use_cam:
+        notes.append("no facecam verified by face detection: gameplay-only layout")
+    rect = (tuple(cam_rect) if cam_rect else cam["rect"]) if use_cam else None
+    aspect = layout.PANEL_ASPECT if use_cam else 9 / 16
+    pw = layout.panel_wh(src_w, src_h)[0] if use_cam else src_h * 9 / 16
+    bounds = cam_layout.crop_bounds(rect, src_w, pw)
+
+    # subject track -> smoothed crop path for the gameplay panel
+    dets = [vision.detect_people(f, rect) for f in smp["small"]]
+    motion = track.centroid_x(vision.small_gray(smp["small"]), rect)
+    sub = subject.build(dets, motion)
+    cxs = smooth(sub["cx"], alpha=0.4, deadband=0.03)
+    pts = [(round(tt, 3), round(max(bounds[0], min(c * src_w - pw / 2, bounds[1])), 1))
+           for tt, c in zip(smp["times"], cxs)] or [(0.0, round((bounds[0] + bounds[1]) / 2, 1))]
+    xs = per_frame_x(pts, n, fps, bounds)
+    zs = punch_curve(n, min(config.PUNCH_TARGET, 0.05) if use_cam else config.PUNCH_TARGET)
+    bxs = boxes(xs, zs, src_w, src_h, bounds[0], aspect)
     stats = path_stats(bxs, fps, src_w, src_h, src_h)
-    stats["cam"] = {"rect": list(rect) if rect else None, "how": how, "corner": corner,
+    idx = [min(int(round(tt * fps)), n - 1) for tt in smp["times"]]
+    sub_plan = subject.inside_stats(sub["box"], smp["times"], [bxs[j][0] for j in idx],
+                                    [bxs[j][2] for j in idx], src_w)
+    stats["subject"] = sub_plan
+
+    cbx = None
+    cam_info = {"found": use_cam, "mode": mode, "search": cam_search}
+    if use_cam:
+        path = layout.face_path(cam["obs"], n, fps)
+        cbx = layout.cam_boxes(path, layout.region_px(rect, src_w, src_h))
+        cam_info.update({"corner": cam["corner"], "face_hit_pct": cam["hit_pct"], "face_w_px": round(path[2], 1),
+                         "rect": list(rect), "box_px": [round(cbx[0][2]), round(cbx[0][3])],
+                         "upscale": round(layout.upscale(cbx), 2)})
+    stats["layout"] = "cam_top" if use_cam else "full"
+    stats["cam_block"] = cam_info
+    stats["panel"] = {"y0": layout.CAM_H if use_cam else 0, "h": layout.PANEL_H if use_cam else OUT_H}
+    stats["cam"] = {"rect": list(rect) if rect else None, "corner": cam["corner"] if use_cam else None,
+                    "how": "face-verified" if use_cam else "none",
                     "excluded": not any(cam_layout.visible_in_crop(rect, b[0], b[2], src_w) for b in bxs)}
     timings["track_sec"] = round(time.monotonic() - t, 1)
-    log(f"crop: zoom max {stats['zoom_max'] * 100:.1f}%, pan max {stats['pan_max_px_s']:.0f}px/s, cam {how}")
+    del smp
+    log(f"layout {stats['layout']}: cam {cam_info.get('corner')} face hits {cam_info.get('face_hit_pct')}%, "
+        f"subject tracked {sub_plan['tracked_pct']}% inside {sub_plan['inside_pct']}%, "
+        f"zoom max {stats['zoom_max'] * 100:.1f}%, pan max {stats['pan_max_px_s']:.0f}px/s")
 
     # audio: measure, then normalise to -14 LUFS (stream audio only)
     t = time.monotonic()
@@ -274,16 +324,17 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
     out_path = os.path.join(out_dir, "clip.mp4")
     short = render_frames(media, s_f, n, fps, bxs, src_w, src_h,
                           encode_cmd(media, s_f, dur, ass_path, out_path, fps, af, preset=preset),
-                          os.path.join(out_dir, "encode.log"))
+                          os.path.join(out_dir, "encode.log"), cbx)
     timings["render_sec"] = round(time.monotonic() - t, 1)
 
     r = {"source": {"width": src_w, "height": src_h, "fps": fps, "duration": pr["duration"]},
          "asked": {"start": start, "end": end}, "cut": {"start": s_f, "duration": round(dur, 4), "frames": n},
          "expected": {"frames": n, "duration": round(dur, 4), "source_fps": fps}, "short_frames": short,
          "hook": {"text": hook, "source": hook_src}, "words": len(cw), "asr": meta, "notes": notes,
-         "crop_points": plan["points"], "loudnorm_input": ln, "timings": timings,
+         "word_spans": [[round(w["s"], 3), round(w["e"], 3)] for w in cw],
+         "crop_points": pts, "loudnorm_input": ln, "timings": timings,
          "encode": {"codec": "libx264", "crf": config.CRF, "preset": preset},
-         "grade_inputs": {"audio_inputs": 1, "audio_filters": ["afade", "loudnorm"], **stats}}
+         "grade_inputs": {"audio_inputs": 1, "audio_filters": list(AUDIO_FILTERS), **stats}}
     with open(os.path.join(out_dir, "render.json"), "w") as f:
         json.dump(r, f, indent=1)
     timings["total_sec"] = round(time.monotonic() - t0, 1)

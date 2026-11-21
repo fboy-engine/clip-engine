@@ -56,12 +56,13 @@ def inside_stats(boxes, times, lefts_px, crop_w_px, src_w, margin=0.01):
     lefts_px: crop left edge (source px) for each sample time. Returns a stats dict."""
     ok = cut = 0
     cut_times = []
-    for b, t, left in zip(boxes, times, lefts_px):
+    cws = np.broadcast_to(np.asarray(crop_w_px, dtype=float), (len(times),))
+    for b, t, left, cw in zip(boxes, times, lefts_px, cws):
         if b is None:
             continue
         x0, x1 = b[0] * src_w, b[2] * src_w
-        m = margin * crop_w_px
-        if x0 >= left + m and x1 <= left + crop_w_px - m:
+        m = margin * cw
+        if x0 >= left + m and x1 <= left + cw - m:
             ok += 1
         else:
             cut += 1

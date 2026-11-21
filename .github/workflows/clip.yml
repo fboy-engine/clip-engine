@@ -275,8 +275,10 @@ jobs:
           CAM: ${{ inputs.cam_corner }}
           CAMRECT: ${{ inputs.cam_rect }}
           PAYOFF: ${{ inputs.payoff_phrase }}
+          SRCURL: ${{ inputs.url }}
         run: |
           ARGS=()
+          [ -n "$SRCURL" ] && ARGS+=(--vod-id "$SRCURL")
           [ -n "$CAM" ] && ARGS+=(--cam-corner "$CAM")
           [ -n "$CAMRECT" ] && ARGS+=(--cam-rect "$CAMRECT")
           [ -n "$PAYOFF" ] && ARGS+=(--payoff "$PAYOFF")
@@ -290,6 +292,7 @@ jobs:
             out/clip.mp4
             out/clip.ass
             out/render.json
+            out/layout.json
             out/grade.json
             out/cam_diag.json
             out/source_contact.jpg

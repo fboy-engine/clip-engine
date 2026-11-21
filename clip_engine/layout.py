@@ -96,3 +96,27 @@ def region_px(rect, src_w, src_h):
 
 def upscale(boxes):
     return OUT_W / boxes[0][2] if boxes else 1.0
+
+
+def layout_report(src_w, src_h, cam_rect, cam_info, bxs, exclusion_info=None):
+    """layout.json: the permanent 1080x1920 layout as actually rendered (cam rect, top block, crop rect,
+    scale factors, exclusion check results)."""
+    lefts = [b[0] for b in bxs]
+    b0 = bxs[0] if bxs else (0.0, 0.0, 0.0, 0.0)
+    return {
+        "output": {"w": OUT_W, "h": OUT_H},
+        "source": {"w": src_w, "h": src_h},
+        "top_block": {"w": OUT_W, "h": CAM_H, "pct_of_height": round(100 * CAM_H / OUT_H, 1)},
+        "gameplay_panel": {"y0": CAM_H, "w": OUT_W, "h": PANEL_H},
+        "cam_rect_frac": list(cam_rect) if cam_rect else None,
+        "cam_rect_px": [round(v) for v in (cam_rect[0] * src_w, cam_rect[1] * src_h, cam_rect[2] * src_w,
+                                           cam_rect[3] * src_h)] if cam_rect else None,
+        "cam_box_px": (cam_info or {}).get("box_px"),
+        "cam_upscale": (cam_info or {}).get("upscale"),
+        "crop_rect_px": {"first": [round(v, 1) for v in b0],
+                         "left_min": round(min(lefts), 1) if lefts else None,
+                         "left_max": round(max(lefts), 1) if lefts else None,
+                         "w": round(b0[2], 1), "h": round(b0[3], 1)},
+        "panel_scale": round(OUT_W / b0[2], 3) if b0[2] else None,
+        "exclusion": exclusion_info or {"checked": False},
+    }

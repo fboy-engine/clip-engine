@@ -17,6 +17,16 @@ VOD_ZONES = {
 }
 
 
+def vod_id_from_url(s):
+    """11-char YouTube video id from a watch/live/youtu.be URL, or `s` itself when it already is an id."""
+    import re
+    s = (s or "").strip()
+    m = re.search(r"(?:v=|youtu\.be/|/live/|/embed/|/shorts/)([A-Za-z0-9_-]{11})", s)
+    if m:
+        return m.group(1)
+    return s if re.fullmatch(r"[A-Za-z0-9_-]{11}", s) else ""
+
+
 def zones_for(vod_id, src_w=BASE_W, src_h=BASE_H):
     """Zones for a known VOD scaled to the source size; {} when the VOD is unknown."""
     z = VOD_ZONES.get(vod_id)

@@ -14,8 +14,8 @@ from fractions import Fraction
 
 import numpy as np
 
-from . import (asr_fix, balance, caption_lane, captions, cam_layout, config, download, hooks, layout, select_clean,
-               subject, track, transcribe, trim, vision)
+from . import (asr_fix, balance, caption_lane, captions, cam_layout, config, download, exclusion, hooks, layout,
+               select_clean, subject, track, transcribe, trim, vision)
 from .cropplan import punch_curve, smooth
 
 OUT_W, OUT_H = config.OUT_W, config.OUT_H
@@ -67,6 +67,17 @@ def smooth_series(xs, sigma):
     r = int(3 * sigma)
     k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma) ** 2)
     return np.convolve(np.pad(xs, r, mode="edge"), k / k.sum(), mode="valid")
+
+
+def panel_bounds(rect, zones, src_w, pw):
+    """(min, max) crop left edge. With known overlay zones the crop stays between them (and the render
+    refuses when it cannot); otherwise the old cam-corner rule."""
+    if zones:
+        b = exclusion.crop_left_bounds(zones, src_w, pw)
+        if b is None:
+            raise ValueError(f"a {pw:.0f} px wide gameplay crop does not fit between the stream overlays: skip")
+        return b
+    return cam_layout.crop_bounds(rect, src_w, pw)
 
 
 def per_frame_x(points, n, fps, bounds, smooth_sec=0.5):
@@ -237,7 +248,7 @@ def decode_gray_at(media, start, dur, fps, w=96, h=54):
     return buf[:n * w * h].reshape(n, h, w)
 
 
-def plan_cut(media, pr, start, end, words, cam_corner, cam_rect, payoff, notes, log):
+def plan_cut(media, pr, start, end, words, cam_corner, cam_rect, payoff, notes, log, zones=None):
     """Cut points: first real motion (with sound) at/after `start`; a payoff end at/before `end`.
     Returns (in_s, out_s, trim_info). Raises when the moment has no honest start or end."""
     src_w, src_h = pr["width"], pr["height"]
@@ -256,7 +267,7 @@ def plan_cut(media, pr, start, end, words, cam_corner, cam_rect, payoff, notes, 
     span = env_end - start
     gray = decode_gray_at(media, start, span, PICK_FPS, w=192, h=108)
     pw = layout.panel_wh(src_w, src_h)[0] if rect else src_h * 9 / 16
-    bounds = cam_layout.crop_bounds(rect, src_w, pw)
+    bounds = panel_bounds(rect, zones, src_w, pw)
     cx = smooth(track.centroid_x(gray, rect), alpha=0.4, deadband=0.03)
     lefts = [max(bounds[0], min(c * src_w - pw / 2, bounds[1])) / src_w for c in cx]
     strip = trim.crop_cols_path(gray, lefts, pw / src_w)
@@ -339,13 +350,16 @@ def diag_lines(dg):
 # ---- the render ----------------------------------------------------------
 
 def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=None, words=None,
-           model="large-v3", cache_dir=None, preset=config.PRESET, log=print, payoff=""):
+           model="large-v3", cache_dir=None, preset=config.PRESET, log=print, payoff="", vod_id=""):
     """Returns the render.json dict (also written to out_dir). Raises on anything it cannot do honestly."""
     os.makedirs(out_dir, exist_ok=True)
     t0 = time.monotonic()
     pr = download.probe_media(media)
     src_w, src_h, fps = pr["width"], pr["height"], pr["fps"]
     notes, timings = [], {}
+    zones = exclusion.zones_for(exclusion.vod_id_from_url(vod_id), src_w, src_h)
+    if zones:
+        log("overlay zones for this stream: " + ", ".join(sorted(zones)))
     # cam diagnostics FIRST, on the whole moment, written even when the render fails later
     diag = write_cam_diag(media, start, min(end, pr["duration"] - 0.05), src_w, src_h, out_dir, cam_rect, log)
     meta = None
@@ -356,7 +370,7 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
     shift, open_notes = 0.0, []
     for attempt in range(OPEN_TRIES):
         notes.clear()                       # each attempt re-plans, so its notes start fresh
-        s_c, e_c, trim_info = plan_cut(media, pr, start + shift, end, words, cam_corner, cam_rect, payoff, notes, log)
+        s_c, e_c, trim_info = plan_cut(media, pr, start + shift, end, words, cam_corner, cam_rect, payoff, notes, log, zones)
         s_f, n, dur = frame_window(s_c, e_c, fps)
         if not (config.MIN_LEN <= dur <= config.MAX_LEN):
             raise ValueError(f"clip would be {dur:.1f} s, outside {config.MIN_LEN:g}-{config.MAX_LEN:g} s")
@@ -399,7 +413,7 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         rect = (tuple(cam_rect) if cam_rect else cam["rect"]) if use_cam else None
         aspect = layout.PANEL_ASPECT if use_cam else 9 / 16
         pw = layout.panel_wh(src_w, src_h)[0] if use_cam else src_h * 9 / 16
-        bounds = cam_layout.crop_bounds(rect, src_w, pw)
+        bounds = panel_bounds(rect, zones, src_w, pw)
 
         # subject track -> smoothed crop path for the gameplay panel
         dets = [vision.detect_people(f, rect) for f in smp["small"]]
@@ -412,6 +426,14 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         zs = punch_curve(n, min(config.PUNCH_TARGET, 0.05) if use_cam else config.PUNCH_TARGET)
         bxs = boxes(xs, zs, src_w, src_h, bounds[0], aspect)
         stats = path_stats(bxs, fps, src_w, src_h, src_h)
+        excl = {"checked": False}
+        if zones:      # gate: no cam, chat, counter or timer pixels in the gameplay panel (every frame's crop)
+            ok_ex, ex_detail, ex_info = exclusion.overlay_gate(bxs, zones)
+            excl = {"checked": True, "ok": bool(ok_ex), "detail": ex_detail, **ex_info}
+            log(f"overlay gate: {ex_detail} ({ex_info['frames_checked']} frames)")
+            if not ok_ex:
+                raise ValueError("overlay gate failed: " + ex_detail)
+        stats["exclusion"] = excl
         idx = [min(int(round(tt * fps)), n - 1) for tt in smp["times"]]
         sub_plan = subject.inside_stats(sub["box"], smp["times"], [bxs[j][0] for j in idx],
                                         [bxs[j][2] for j in idx], src_w)
@@ -478,6 +500,8 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
                           "hook": {"text": hook, "source": hook_src, "match": hook_match}, **stats}}
     with open(os.path.join(out_dir, "render.json"), "w") as f:
         json.dump(r, f, indent=1)
+    with open(os.path.join(out_dir, "layout.json"), "w") as f:
+        json.dump(layout.layout_report(src_w, src_h, rect, cam_info, bxs, stats.get("exclusion")), f, indent=1)
     timings["total_sec"] = round(time.monotonic() - t0, 1)
     log(f"rendered {out_path} in {timings['render_sec']}s (total {timings['total_sec']}s)")
     return r

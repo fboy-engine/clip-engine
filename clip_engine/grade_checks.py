@@ -339,10 +339,10 @@ def key_numbers(m):
             ]
     dg = r.get("cam_diag") or {}
     if dg.get("corners"):
-        rows.append("cam diagnostics (frames with a face, strict/relaxed/wide of %s): " % dg.get("frames")
-                    + "; ".join(f"{c} {v['strict']}/{v['relaxed']}/{v.get('wide', '-')} (max face {v['max_face_px']} px)"
+        rows.append("cam diagnostics (frames with a face, strict/relaxed of %s): " % dg.get("frames")
+                    + "; ".join(f"{c} {v['strict']}/{v['relaxed']} (max face {v['max_face_px']} px)"
                                 for c, v in dg["corners"].items())
-                    + ((f"; seed rect {dg['seed']['rect']}: wide {dg['seed']['wide']} ({dg['seed'].get('wide_pct')}%)")
+                    + ((f"; seed rect {dg['seed']['rect']}: strict {dg['seed']['strict']} ({dg['seed'].get('strict_pct')}%)")
                        if dg.get("seed") else ""))
     elif dg.get("error"):
         rows.append("cam diagnostics failed: " + str(dg["error"]))

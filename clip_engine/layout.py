@@ -15,7 +15,9 @@ MAX_CAM_UPSCALE = 3.0             # never blow a small cam up more than this
 FACE_BOX_FACTOR = 4.2             # crop width = face width * this (face + shoulders)
 FACE_ROW = 0.40                   # face centre sits at this fraction of the cam block height
 NOMINAL_CAM = {"bottom-left": (0.0, 0.62, 0.26, 1.0), "bottom-right": (0.74, 0.62, 1.0, 1.0),
-               "top-left": (0.0, 0.0, 0.26, 0.38), "top-right": (0.74, 0.0, 1.0, 0.38)}
+               "top-left": (0.0, 0.0, 0.26, 0.38), "top-right": (0.74, 0.0, 1.0, 0.38),
+               "mid-left": (0.0, 0.30, 0.26, 0.70), "mid-right": (0.74, 0.30, 1.0, 0.70),
+               "top-mid": (0.37, 0.0, 0.63, 0.38), "bottom-mid": (0.37, 0.62, 0.63, 1.0)}
 
 
 def panel_wh(src_w, src_h):

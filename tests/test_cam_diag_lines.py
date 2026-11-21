@@ -5,10 +5,10 @@ from clip_engine import render_clip
 
 
 def diag(seed=False):
-    c = {"strict": 1, "relaxed": 2, "wide": 3, "max_face_px": 40, "strict_pct": 9.1, "wide_pct": 27.3}
+    c = {"strict": 1, "relaxed": 2, "max_face_px": 40, "strict_pct": 9.1}
     d = {"frames": 11, "corners": {k: dict(c) for k in ("top-left", "top-right", "bottom-left", "bottom-right")}}
     if seed:
-        d["seed"] = {"rect": [0.7, 0.0, 1.0, 0.3], "strict": 0, "wide": 4, "wide_pct": 36.4, "max_face_px": 55}
+        d["seed"] = {"rect": [0.7, 0.0, 1.0, 0.3], "strict": 4, "strict_pct": 36.4, "max_face_px": 55}
     return d
 
 
@@ -16,7 +16,7 @@ class DiagLines(unittest.TestCase):
     def test_one_line_per_corner(self):
         rows = render_clip.diag_lines(diag())
         self.assertEqual(len(rows), 4)
-        self.assertIn("bottom-left: strict 1/11 (9.1%), relaxed 2, wide 3 (27.3%), max face 40 px", rows)
+        self.assertIn("bottom-left: strict 1/11 (9.1%), relaxed 2, max face 40 px", rows)
 
     def test_seed_rect_is_reported(self):
         rows = render_clip.diag_lines(diag(seed=True))

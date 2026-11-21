@@ -177,7 +177,13 @@ def sharpen(img, amount=0.35, sigma=1.2):
     return cv2.addWeighted(img, 1 + amount, blur, -amount, 0)
 
 
-def render_frames(media, start, n, fps, bxs, src_w, src_h, enc_cmd, enc_log, cam_bxs=None):
+def denoise(img):
+    """Light edge-preserving denoise of the small source cam crop, before the lanczos upscale."""
+    import cv2
+    return cv2.bilateralFilter(img, 5, 20, 5)
+
+
+def render_frames(media, start, n, fps, bxs, src_w, src_h, enc_cmd, enc_log, cam_bxs=None, cam_region=None):
     """cam_bxs None: one full-height 9:16 crop. Otherwise cam block on top, gameplay panel below."""
     import cv2
     size = src_w * src_h * 3
@@ -198,7 +204,12 @@ def render_frames(media, start, n, fps, bxs, src_w, src_h, enc_cmd, enc_log, cam
                 out = cv2.warpAffine(last, affine(bxs[i]), (OUT_W, panel_h), flags=cv2.INTER_LANCZOS4,
                                      borderMode=cv2.BORDER_REPLICATE)
                 if cam_bxs:
-                    cam = cv2.warpAffine(last, affine(cam_bxs[i]), (OUT_W, layout.CAM_H),
+                    cb, csrc = cam_bxs[i], last
+                    if cam_region:      # denoise the small crop, then lanczos up to 1080x540, then a light sharpen
+                        rx0, ry0, rx1, ry1 = cam_region
+                        csrc = denoise(last[ry0:min(ry1, src_h), rx0:min(rx1, src_w)])
+                        cb = (cb[0] - rx0, cb[1] - ry0, cb[2], cb[3])
+                    cam = cv2.warpAffine(csrc, affine(cb), (OUT_W, layout.CAM_H),
                                          flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REPLICATE)
                     out = np.vstack([sharpen(cam), out])
                 enc.stdin.write(out.tobytes())
@@ -303,21 +314,21 @@ def shown_opening(media, s_f, fps, box, src_w):
 
 
 def seeded_cam(media, s_f, dur, cam_rect, src_w, src_h, log):
-    """The cam region a person pointed at. The relaxed wide-scale detector looks for the face inside it; with
-    3+ hits the cam block follows the face, otherwise it shows the region itself (static). Either way it is
-    reported as user-seeded, never as face-verified."""
+    """Verify the seeded cam region: a LARGE, STABLE face (strict detector) on the sampled frames. Returns the
+    cam dict, or None when no cam is verified (the caller refuses the clip: no full-frame fallback)."""
     rect = tuple(float(v) for v in cam_rect)
     obs, n = vision.faces_in_rect(media, s_f, dur, rect, src_w, src_h)
+    rect_wh = ((rect[2] - rect[0]) * src_w, (rect[3] - rect[1]) * src_h)
+    ok, info, large = vision.verify_cam(obs, n, rect_wh)
     cx, cy = (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2
     corner = ("top" if cy < 0.5 else "bottom") + "-" + ("left" if cx < 0.5 else "right")
-    hit = round(100 * len(obs) / n, 1) if n else 0.0
-    if len(obs) >= 3:
-        how = "user-seeded, face-tracked"
-    else:
-        wpx = (rect[2] - rect[0]) * src_w
-        obs, how = [(0.0, cx * src_w, cy * src_h, wpx / layout.FACE_BOX_FACTOR)], "user-seeded, static region (no face found)"
-    log(f"cam seeded from rect {rect}: {how}, relaxed face hits {hit}% of {n} samples")
-    return {"corner": corner, "obs": obs, "hit_pct": hit, "rect": rect, "how": how}
+    log(f"cam seed {rect}: {'VERIFIED' if ok else 'NOT verified'}: {info['large_faces']} large faces "
+        f"(>= {info['min_face_px']} px) in {n} samples = {info['hit_pct']}% (needs {info['needs_pct']}%), "
+        f"spread {info['spread']}")
+    if not ok:
+        return None
+    return {"corner": corner, "obs": large, "hit_pct": info["hit_pct"], "rect": rect,
+            "how": "seed rect + large stable face verified", "verify": info}
 
 
 def write_cam_diag(media, start, end, src_w, src_h, out_dir, cam_rect, log):
@@ -334,15 +345,15 @@ def write_cam_diag(media, start, end, src_w, src_h, out_dir, cam_rect, log):
 
 
 def diag_lines(dg):
-    """One short line per corner (strict/relaxed/wide face hits, % of frames) for logs and the run summary."""
+    """One short line per search region (strict/relaxed face hits, % of frames) for logs and the run summary."""
     if not dg or dg.get("error"):
         return ["cam diagnostics failed: " + str((dg or {}).get("error"))]
     rows = [f"{c}: strict {v['strict']}/{dg['frames']} ({v.get('strict_pct')}%), relaxed {v['relaxed']}, "
-            f"wide {v.get('wide')} ({v.get('wide_pct')}%), max face {v['max_face_px']} px"
+            f"max face {v['max_face_px']} px"
             for c, v in dg.get("corners", {}).items()]
     if dg.get("seed"):
         sd = dg["seed"]
-        rows.append(f"seed rect {sd['rect']}: strict {sd['strict']}, wide {sd['wide']} ({sd.get('wide_pct')}%), "
+        rows.append(f"seed rect {sd['rect']}: strict {sd['strict']}/{dg['frames']} ({sd.get('strict_pct')}%), "
                     f"max face {sd['max_face_px']} px")
     return rows
 
@@ -360,6 +371,9 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
     zones = exclusion.zones_for(exclusion.vod_id_from_url(vod_id), src_w, src_h)
     if zones:
         log("overlay zones for this stream: " + ", ".join(sorted(zones)))
+        if not cam_rect and (cam_corner or "").strip().lower() != "none":
+            cam_rect = exclusion.cam_seed_frac(zones, src_w, src_h)     # seed; the face check below verifies it
+            log(f"cam seed from the stream's cam zone: {cam_rect}")
     # cam diagnostics FIRST, on the whole moment, written even when the render fails later
     diag = write_cam_diag(media, start, min(end, pr["duration"] - 0.05), src_w, src_h, out_dir, cam_rect, log)
     meta = None
@@ -406,10 +420,11 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         cam, cam_search = vision.choose_cam(smp["faces"], smp["n"], src_w, src_h) if corners else (None, {})
         if cam_rect and mode != "none":
             cam = seeded_cam(media, s_f, dur, cam_rect, src_w, src_h, log)
-            cam_search = {"seeded_by_person": True, "face_hit_pct": cam["hit_pct"]}
+            cam_search = {"seeded": True, "verify": cam["verify"] if cam else None}
         use_cam = cam is not None
-        if corners and not use_cam:
-            notes.append("no facecam verified by face detection: gameplay-only layout")
+        if not use_cam and (mode != "none" or zones):
+            raise ValueError("no facecam verified (a large, stable face in the cam region on the sampled frames): "
+                             "refusing the clip, there is no full-frame fallback")
         rect = (tuple(cam_rect) if cam_rect else cam["rect"]) if use_cam else None
         aspect = layout.PANEL_ASPECT if use_cam else 9 / 16
         pw = layout.panel_wh(src_w, src_h)[0] if use_cam else src_h * 9 / 16
@@ -486,7 +501,8 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
     out_path = os.path.join(out_dir, "clip.mp4")
     short = render_frames(media, s_f, n, fps, bxs, src_w, src_h,
                           encode_cmd(media, s_f, dur, ass_path, out_path, fps, af, preset=preset),
-                          os.path.join(out_dir, "encode.log"), cbx)
+                          os.path.join(out_dir, "encode.log"), cbx,
+                          layout.region_px(rect, src_w, src_h) if use_cam else None)
     timings["render_sec"] = round(time.monotonic() - t, 1)
 
     r = {"source": {"width": src_w, "height": src_h, "fps": fps, "duration": pr["duration"]},
@@ -494,7 +510,9 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
          "expected": {"frames": n, "duration": round(dur, 4), "source_fps": fps}, "short_frames": short,
          "hook": {"text": hook, "source": hook_src, "match": hook_match}, "trim": trim_info, "words": len(cw), "asr": meta, "notes": notes,
          "word_spans": [[round(w["s"], 3), round(w["e"], 3)] for w in cw],
-         "cam_diag": diag, "crop_points": pts, "loudnorm_input": ln, "timings": timings,
+         "cam_diag": diag, "crop_points": pts,
+         "cam_scale": {"upscale": cam_info.get("upscale"), "box_px": cam_info.get("box_px"),
+                       "chain": "bilateral denoise, lanczos4 upscale, light unsharp"}, "loudnorm_input": ln, "timings": timings,
          "encode": {"codec": "libx264", "crf": config.CRF, "preset": preset},
          "grade_inputs": {"cam_diag": diag, "audio_inputs": 1, "audio_filters": list(AUDIO_FILTERS), "trim": trim_info,
                           "hook": {"text": hook, "source": hook_src, "match": hook_match}, **stats}}

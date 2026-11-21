@@ -36,6 +36,14 @@ def zones_for(vod_id, src_w=BASE_W, src_h=BASE_H):
     return {k: (x0 * sx, y0 * sy, x1 * sx, y1 * sy) for k, (x0, y0, x1, y1) in z.items()}
 
 
+def cam_seed_frac(zones, src_w, src_h):
+    """The cam zone as fractions (x0, y0, x1, y1) of the frame: the seed the face check starts from."""
+    z = (zones or {}).get("cam")
+    if not z:
+        return None
+    return (round(z[0] / src_w, 4), round(z[1] / src_h, 4), round(z[2] / src_w, 4), round(z[3] / src_h, 4))
+
+
 def _overlap(a, b):
     return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
 

@@ -11,8 +11,12 @@ SAMPLE_FPS = 2
 SMALL_W = 960
 # where the cam face is searched, per corner (fractions x0, y0, x1, y1)
 CORNER_SEARCH = {"bottom-left": (0.0, 0.45, 0.40, 1.0), "bottom-right": (0.60, 0.45, 1.0, 1.0),
-                 "top-left": (0.0, 0.0, 0.40, 0.55), "top-right": (0.60, 0.0, 1.0, 0.55)}
+                 "top-left": (0.0, 0.0, 0.40, 0.55), "top-right": (0.60, 0.0, 1.0, 0.55),
+                 # mid-edge cams (a stream can park the cam halfway up a side or in the middle of an edge)
+                 "mid-left": (0.0, 0.25, 0.30, 0.75), "mid-right": (0.70, 0.25, 1.0, 0.75),
+                 "top-mid": (0.30, 0.0, 0.70, 0.40), "bottom-mid": (0.30, 0.60, 0.70, 1.0)}
 MIN_FACE_HITS = 0.35        # share of samples with a face for the cam to count as verified
+MIN_FACE_FRAC = 0.12        # a verified cam face is at least this fraction of the cam region's width ("large")
 
 
 class DetectorUnavailable(RuntimeError):
@@ -142,70 +146,50 @@ def sample(media, start, dur, src_w, src_h, corners, fps=SAMPLE_FPS, small_w=SMA
     return {"times": times, "small": small, "faces": faces, "n": len(times)}
 
 
-def _extra_cascades(cv2):
-    """Other stock cascades for small or stylised cams (alt2 frontal, profile). Missing ones are skipped."""
-    out = []
-    base = _dig(cv2, "data.haarcascades")
-    cls = cascade_class(cv2)
-    if base is None or cls is None:
-        return out
-    for name in ("haarcascade_frontalface_alt2.xml", "haarcascade_profileface.xml"):
-        try:
-            c = cls(base + name)
-            empty = getattr(c, "empty", None)
-            if not (callable(empty) and empty()):
-                out.append(c)
-        except Exception:
-            pass
-    return out
-
-
-def wide_face(cascades, gray, min_frac=0.025):
-    """Relaxed, wide-scale face search for small or stylised cams: tiny minimum size (a cam can be a small
-    inset), fine scale steps, few neighbours, several cascades, also on a 2x upscaled copy.
-    Returns the largest (x, y, w, h) in `gray` pixels or None. Used for diagnostics and for a cam region the
-    person pointed at; the strict detector (best_face) still decides the automatic cam."""
-    import cv2
-    g = cv2.equalizeHist(gray)
-    m = max(18, int(min_frac * g.shape[1]))
-    best = None
-    for casc in cascades:
-        for img, k in ((g, 1.0), (cv2.resize(g, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC), 0.5)):
-            f = casc.detectMultiScale(img, scaleFactor=1.03, minNeighbors=2, minSize=(int(m / k), int(m / k)))
-            for r in f:
-                r = tuple(float(v) * k for v in r)
-                if best is None or r[2] * r[3] > best[2] * best[3]:
-                    best = r
-    return best
-
-
 def faces_in_rect(media, start, dur, rect, src_w, src_h, fps=2):
-    """Faces found by the relaxed detector inside a person-given cam rect (fractions).
+    """Faces found by the STRICT detector (best_face) inside a cam rect (fractions).
     Returns (obs [(t, cx, cy, face_w)] in source px, frames_seen)."""
     import cv2
-    cascades = [load_face_cascade(cv2)] + _extra_cascades(cv2)
+    casc = load_face_cascade(cv2)
     x0, y0, x1, y1 = region_px(rect, src_w, src_h)
     obs, n = [], 0
     for t, fr in frames_iter(media, start, dur, fps, src_w, src_h):
         n += 1
-        f = wide_face(cascades, cv2.cvtColor(fr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY))
+        f = best_face(casc, cv2.cvtColor(fr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY))
         if f is not None:
             obs.append((t, x0 + f[0] + f[2] / 2, y0 + f[1] + f[3] / 2, float(f[2])))
     return obs, n
 
 
+def verify_cam(obs, n, rect_wh, min_hits=MIN_FACE_HITS, min_face_frac=MIN_FACE_FRAC, max_spread=0.25):
+    """(ok, info): is there a LARGE, STABLE face in the cam region? obs [(t, cx, cy, face_w)] from the strict
+    detector on n sampled frames; rect_wh the region size in px. A real cam face is big relative to its
+    region, shows in many samples and stays put; a game character or a texture does none of these."""
+    rw, rh = float(rect_wh[0]), float(rect_wh[1])
+    large = [o for o in obs if o[3] >= min_face_frac * rw]
+    hit = len(large) / n if n else 0.0
+    spread = 1.0
+    if len(large) >= 3:
+        cx = np.array([o[1] for o in large])
+        cy = np.array([o[2] for o in large])
+        spread = max(float(np.median(np.abs(cx - np.median(cx)))) / rw, float(np.median(np.abs(cy - np.median(cy)))) / rh)
+    ok = len(large) >= 3 and hit >= min_hits and spread <= max_spread
+    return bool(ok), {"samples": n, "faces": len(obs), "large_faces": len(large), "hit_pct": round(100 * hit, 1),
+                      "spread": round(spread, 3), "min_face_px": round(min_face_frac * rw, 1),
+                      "median_face_px": round(float(np.median([o[3] for o in large])), 1) if large else 0.0,
+                      "needs_pct": round(100 * min_hits)}, large
+
+
 def cam_diag(media, start, dur, src_w, src_h, out_jpg=None, fps=0.25, max_frames=16, seed_rect=None):
     """Why was no facecam found? Per corner: frames with a face under the strict settings used for the cam
-    decision, relaxed settings, and the wide-scale search (tiny min size, several cascades), plus the largest
-    face seen. Optional seed_rect (fractions, from a person) gets the same counts. Writes a contact sheet of
+    decision and relaxed settings, plus the largest face seen. Optional seed_rect (fractions, from a person) gets the same counts. Writes a contact sheet of
     FULL source frames spread over the moment (6 tiles of 960x540, so a person can look at the stream layout)
     and up to 3 native-resolution frames next to it (source_frame_N.jpg). Diagnostic only: the automatic cam
     decision is unchanged."""
     import cv2
     casc = load_face_cascade(cv2)
-    cascades = [casc] + _extra_cascades(cv2)
-    rep = {c: {"strict": 0, "relaxed": 0, "wide": 0, "max_face_px": 0} for c in CORNER_SEARCH}
-    seed = {"rect": [round(float(v), 4) for v in seed_rect], "strict": 0, "wide": 0, "max_face_px": 0} if seed_rect else None
+    rep = {c: {"strict": 0, "relaxed": 0, "max_face_px": 0} for c in CORNER_SEARCH}
+    seed = {"rect": [round(float(v), 4) for v in seed_rect], "strict": 0, "max_face_px": 0} if seed_rect else None
     n_expect = max(1, min(max_frames, int(dur * fps)))
     native_at = {0, n_expect // 2, n_expect - 1}
     thumbs, n, native = [], 0, []
@@ -225,18 +209,13 @@ def cam_diag(media, start, dur, src_w, src_h, out_jpg=None, fps=0.25, max_frames
             if len(f):
                 rep[c]["relaxed"] += 1
                 rep[c]["max_face_px"] = max(rep[c]["max_face_px"], int(max(r[2] for r in f)))
-            w = wide_face(cascades, gray)
-            if w is not None:
-                rep[c]["wide"] += 1
-                rep[c]["max_face_px"] = max(rep[c]["max_face_px"], int(w[2]))
         if seed:
             x0, y0, x1, y1 = region_px(seed_rect, src_w, src_h)
             gray = cv2.cvtColor(fr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
-            seed["strict"] += best_face(casc, gray) is not None
-            w = wide_face(cascades, gray)
-            if w is not None:
-                seed["wide"] += 1
-                seed["max_face_px"] = max(seed["max_face_px"], int(w[2]))
+            sf = best_face(casc, gray)
+            if sf is not None:
+                seed["strict"] += 1
+                seed["max_face_px"] = max(seed["max_face_px"], int(sf[2]))
         if n >= max_frames:
             break
     if out_jpg and thumbs:
@@ -253,11 +232,10 @@ def cam_diag(media, start, dur, src_w, src_h, out_jpg=None, fps=0.25, max_frames
             cv2.imwrite(f"{stem}source_frame_{i}.jpg", fr, [cv2.IMWRITE_JPEG_QUALITY, 88])
     for v in rep.values():
         v["strict_pct"] = round(100 * v["strict"] / n, 1) if n else 0.0
-        v["wide_pct"] = round(100 * v["wide"] / n, 1) if n else 0.0
     out = {"frames": n, "window_s": [round(start, 2), round(start + dur, 2)], "source": [src_w, src_h],
            "corners": rep, "min_hits_needed_pct": round(100 * MIN_FACE_HITS)}
     if seed:
-        seed["wide_pct"] = round(100 * seed["wide"] / n, 1) if n else 0.0
+        seed["strict_pct"] = round(100 * seed["strict"] / n, 1) if n else 0.0
         out["seed"] = seed
     return out
 

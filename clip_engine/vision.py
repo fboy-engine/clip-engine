@@ -6,12 +6,94 @@ import numpy as np
 
 from .layout import region_px, est_cam_rect
 
+PIN_HINT = 'pin it in clip.yml: pip install "opencv-python-headless>=4.9,<5"'
 SAMPLE_FPS = 2
 SMALL_W = 960
 # where the cam face is searched, per corner (fractions x0, y0, x1, y1)
 CORNER_SEARCH = {"bottom-left": (0.0, 0.45, 0.40, 1.0), "bottom-right": (0.60, 0.45, 1.0, 1.0),
                  "top-left": (0.0, 0.0, 0.40, 0.55), "top-right": (0.60, 0.0, 1.0, 0.55)}
 MIN_FACE_HITS = 0.35        # share of samples with a face for the cam to count as verified
+
+
+class DetectorUnavailable(RuntimeError):
+    """The installed OpenCV cannot run a detector we need. The message says why and how to fix it."""
+
+
+def _dig(obj, dotted):
+    for part in dotted.split("."):
+        obj = getattr(obj, part, None)
+        if obj is None:
+            return None
+    return obj
+
+
+def cascade_class(cv2):
+    """cv2.CascadeClassifier, or the same class under another module name (OpenCV 5 moved things
+    around). None when no build we know of has it."""
+    for name in ("CascadeClassifier", "objdetect.CascadeClassifier", "xobjdetect.CascadeClassifier"):
+        cls = _dig(cv2, name)
+        if cls is not None:
+            return cls
+    return None
+
+
+def haar_face_path(cv2):
+    base = _dig(cv2, "data.haarcascades")
+    return None if base is None else base + "haarcascade_frontalface_default.xml"
+
+
+def load_face_cascade(cv2=None):
+    """Face cascade or a clear DetectorUnavailable (never an AttributeError mid-render)."""
+    if cv2 is None:
+        import cv2
+    ver = getattr(cv2, "__version__", "?")
+    cls = cascade_class(cv2)
+    if cls is None:
+        raise DetectorUnavailable(f"OpenCV {ver} has no CascadeClassifier (OpenCV 5 removed it); " + PIN_HINT)
+    path = haar_face_path(cv2)
+    if path is None:
+        raise DetectorUnavailable(f"OpenCV {ver} ships no haarcascade data (cv2.data missing); " + PIN_HINT)
+    casc = cls(path)
+    empty = getattr(casc, "empty", None)
+    if callable(empty) and empty():
+        raise DetectorUnavailable(f"OpenCV {ver}: face cascade failed to load from {path}")
+    return casc
+
+
+def load_people_detector(cv2=None):
+    """HOG people detector or a clear DetectorUnavailable."""
+    if cv2 is None:
+        import cv2
+    ver = getattr(cv2, "__version__", "?")
+    if _dig(cv2, "HOGDescriptor") is None or _dig(cv2, "HOGDescriptor_getDefaultPeopleDetector") is None:
+        raise DetectorUnavailable(f"OpenCV {ver} has no HOG people detector; " + PIN_HINT)
+    hog = cv2.HOGDescriptor()
+    hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+    return hog
+
+
+def check_features(cv2=None):
+    """Fail-fast feature check for CI. Returns (ok, report lines). No video needed."""
+    if cv2 is None:
+        import cv2
+    ver = str(getattr(cv2, "__version__", "?"))
+    lines, ok = [f"opencv {ver}"], True
+    major = ver.split(".")[0]
+    if major.isdigit() and int(major) >= 5:
+        lines.append("FAIL opencv major >= 5: " + PIN_HINT)
+        ok = False
+    for label, fn in (("face cascade", load_face_cascade), ("people detector", load_people_detector)):
+        try:
+            fn(cv2)
+            lines.append("ok   " + label)
+        except DetectorUnavailable as e:
+            lines.append(f"FAIL {label}: {e}")
+            ok = False
+    for name in ("GaussianBlur", "addWeighted", "warpAffine", "resize", "equalizeHist"):
+        if _dig(cv2, name) is None:
+            lines.append(f"FAIL cv2.{name} missing")
+            ok = False
+    return ok, lines
 
 
 def frames_iter(media, start, dur, fps, w, h):
@@ -45,7 +127,7 @@ def sample(media, start, dur, src_w, src_h, corners, fps=SAMPLE_FPS, small_w=SMA
     """One decode pass at `fps`: small colour frames for the subject tracker, and the best face
     found in each searched corner. faces[corner] = [(t, cx_px, cy_px, face_w_px)] in source px."""
     import cv2
-    casc = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    casc = load_face_cascade(cv2)
     sh = int(round(src_h * small_w / src_w))
     times, small = [], []
     faces = {c: [] for c in corners}
@@ -91,8 +173,7 @@ def detect_people(img, mask=None, min_score=0.4):
     import cv2
     global _HOG
     if _HOG is None:
-        _HOG = cv2.HOGDescriptor()
-        _HOG.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+        _HOG = load_people_detector(cv2)
     h, w = img.shape[:2]
     im = img
     if mask:

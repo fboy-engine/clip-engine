@@ -44,6 +44,19 @@ def _env():
     return os.environ.get("YT_COOKIES_FILE"), os.environ.get("YT_PROXY")
 
 
+def cmd_check_cv(_a):
+    """Fail fast: the render needs OpenCV 4.x with the face cascade and HOG people detector."""
+    try:
+        from . import vision
+        ok, lines = vision.check_features()
+    except Exception as e:  # import error etc.: say so, never pass by default
+        print(f"FAIL check-cv: {type(e).__name__}: {str(e)[:300]}")
+        return 1
+    print("\n".join(lines))
+    print("PASS check-cv" if ok else "FAIL check-cv: fix the OpenCV install before rendering")
+    return 0 if ok else 1
+
+
 def cmd_info(a):
     cookies, proxy = _env()
     safe, err = download.info(a.url, cookies, proxy)
@@ -148,6 +161,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="clip_engine")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("gemini-check").set_defaults(fn=gemini_check)
+    sub.add_parser("check-cv").set_defaults(fn=cmd_check_cv)
     i = sub.add_parser("info")
     i.add_argument("url")
     i.set_defaults(fn=cmd_info)

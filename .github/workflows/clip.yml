@@ -248,12 +248,16 @@ jobs:
           FIND_MODEL: ${{ inputs.find_model }}
           FIND_TOP: ${{ inputs.find_top }}
         run: python -m clip_engine.cli find out/source.mp4 --offset "$START" --model "$FIND_MODEL" --top "$FIND_TOP" --out out
-      - name: Install opencv (render only)
+      - name: Install opencv 4.x (render only; OpenCV 5 removed CascadeClassifier)
         if: ${{ inputs.render }}
         timeout-minutes: 5
         run: |
-          timeout 240 pip install -q --default-timeout 30 --retries 2 opencv-python-headless
+          timeout 240 pip install -q --default-timeout 30 --retries 2 "opencv-python-headless>=4.9,<5"
           python -c "import cv2; print('opencv', cv2.__version__)"
+      - name: Feature check (fail fast before the render starts)
+        if: ${{ inputs.render }}
+        timeout-minutes: 2
+        run: python -m clip_engine.cli check-cv
       - name: Render clip (cam on top, subject-tracked gameplay panel, captions, hook, -14 LUFS) and grade it
         if: ${{ inputs.render }}
         timeout-minutes: 35

@@ -80,6 +80,41 @@ def choose_start(d, fps, rms, hop, search=START_SEARCH):
     return None, {"tried": tried, "audio_ok": False}
 
 
+def crop_cols(gray, left, width):
+    """Columns of a gray stack (n, h, w) that a crop shows. left/width are fractions of the frame
+    width. Motion outside this strip is invisible in the 9:16 output, so it must not start a clip."""
+    g = np.asarray(gray)
+    w = g.shape[2]
+    wc = max(2, min(w, int(round(width * w))))
+    x0 = int(min(max(round(left * w), 0), w - wc))
+    return g[:, :, x0:x0 + wc]
+
+
+def visible_start(strip, fps, rms, hop, search=START_SEARCH, secs=3.0, step=0.1, gate=None):
+    """Earliest offset t (s, 0..search) at which the SHOWN strip passes the same opening gate the
+    grade runs (no frozen picture, real motion, `secs` seconds) and there is sound.
+    strip: gray stack (n, h, w) at `fps` from the candidate start. Returns (t or None, info).
+    The gate is never loosened: if no offset passes, the caller must skip the moment."""
+    if gate is None:
+        from . import gates
+        gate = gates.opening_gate
+    strip = np.asarray(strip)
+    k = max(1, int(round(fps / 10.0)))          # the grade samples the opening at 10 fps
+    need = int(round(secs * fps))
+    tried, t = [], 0.0
+    while t <= search + 1e-9:
+        i0 = int(round(t * fps))
+        seg = strip[i0:i0 + need:k]
+        if i0 + need <= len(strip) and len(seg) >= 3:
+            ok, detail, info = gate(seg, fps / k)
+            tried.append(round(t, 2))
+            if ok and audible_at(rms, hop, t):
+                return round(t, 3), {"visible_start_s": round(t, 3), "checked": len(tried), "detail": detail,
+                                     "audio_ok": True}
+        t += step
+    return None, {"visible_start_s": None, "checked": len(tried), "audio_ok": False}
+
+
 def snap_start_forward(words, t, max_fwd=1.0, lead=0.08):
     """If t falls inside a word, move to just before the next word when that is within max_fwd s.
     Never moves earlier (an earlier start would bring the dead opening back)."""

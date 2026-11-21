@@ -28,11 +28,18 @@ def fix_words(words, glossary=None):
     return out
 
 
-def to_clip_time(words, offset):
-    """Shift word times onto the clip clock and drop words fully outside [0, inf)."""
+def to_clip_time(words, offset, min_inside=0.5, min_inside_s=0.15):
+    """Shift word times onto the clip clock. Words fully before the cut are dropped; a word the cut
+    slices through is kept only when most of it is still in the clip (otherwise a 30 ms caption
+    sliver like "bro" would open the clip and the hook)."""
     res = []
     for w in words:
         s, e = w["s"] - offset, w["e"] - offset
-        if e > 0:
-            res.append({**w, "s": max(s, 0.0), "e": e})
+        if e <= 0:
+            continue
+        if s < 0:
+            inside = e / max(w["e"] - w["s"], 1e-6)
+            if inside < min_inside or e < min_inside_s:
+                continue
+        res.append({**w, "s": max(s, 0.0), "e": e})
     return res

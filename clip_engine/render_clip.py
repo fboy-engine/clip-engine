@@ -23,6 +23,7 @@ GRAY_FPS, GRAY_W, GRAY_H = 4, 64, 36
 FADE = 0.012
 END_FADE = 0.15       # short fade out at the end (0.1-0.2 s is fine; no long fade to silence)
 MOTION_FPS = 20
+OPEN_TRIES = 3        # re-plan the cut at most this many times when the shown opening is frozen
 NOMINAL_CAM = layout.NOMINAL_CAM
 GLOSSARY = {"lucia": "Lucia"}
 
@@ -270,6 +271,20 @@ def plan_cut(media, pr, start, end, words, cam_corner, cam_rect, payoff, notes, 
     return t0, t1, info
 
 
+def shown_opening(media, s_f, fps, box, src_w):
+    """Check the cut start against the strip the viewer will actually see (the 9:16 crop), with the same
+    opening gate the grade runs. Returns (ok, first_good_offset_s or None, info). Motion outside the
+    crop (an undetected facecam, the far side of the map) must not count as "first motion"."""
+    dur = trim.START_SEARCH + 3.5
+    gray = decode_gray_at(media, s_f, dur, MOTION_FPS, w=192, h=108)
+    strip = trim.crop_cols(gray, box[0] / src_w, box[2] / src_w)
+    pcm = transcribe.decode_pcm(media, s_f, s_f + dur)
+    rms = balance.rms_db(pcm, transcribe.SR, 0.05)
+    t, info = trim.visible_start(strip, MOTION_FPS, rms, 0.05)
+    info["strip"] = [round(box[0] / src_w, 3), round(box[2] / src_w, 3)]
+    return (t is not None and t < 0.06), t, info
+
+
 # ---- the render ----------------------------------------------------------
 
 def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=None, words=None,
@@ -285,81 +300,99 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         words, meta = transcribe_words(media, start, end, model, cache_dir)
         timings["asr_sec"] = meta["transcribe_sec"]
     words = asr_fix.fix_words(words, GLOSSARY)
-    s_c, e_c, trim_info = plan_cut(media, pr, start, end, words, cam_corner, cam_rect, payoff, notes, log)
-    s_f, n, dur = frame_window(s_c, e_c, fps)
-    if not (config.MIN_LEN <= dur <= config.MAX_LEN):
-        raise ValueError(f"clip would be {dur:.1f} s, outside {config.MIN_LEN:g}-{config.MAX_LEN:g} s")
-    if s_f + dur > pr["duration"] + 0.01:
-        raise ValueError("window runs past the end of the source file")
-    log(f"window: asked {start:g}-{end:g}s, cut {s_f:.3f}s +{dur:.3f}s ({n} frames @ {fps:g} fps)")
+    shift, open_notes = 0.0, []
+    for attempt in range(OPEN_TRIES):
+        notes.clear()                       # each attempt re-plans, so its notes start fresh
+        s_c, e_c, trim_info = plan_cut(media, pr, start + shift, end, words, cam_corner, cam_rect, payoff, notes, log)
+        s_f, n, dur = frame_window(s_c, e_c, fps)
+        if not (config.MIN_LEN <= dur <= config.MAX_LEN):
+            raise ValueError(f"clip would be {dur:.1f} s, outside {config.MIN_LEN:g}-{config.MAX_LEN:g} s")
+        if s_f + dur > pr["duration"] + 0.01:
+            raise ValueError("window runs past the end of the source file")
+        log(f"window: asked {start:g}-{end:g}s, cut {s_f:.3f}s +{dur:.3f}s ({n} frames @ {fps:g} fps)")
 
-    # captions + hook (word times shifted onto the clip clock)
-    cw = [w for w in asr_fix.to_clip_time(words, s_f) if w["s"] < dur]
-    for w in cw:
-        w["e"] = min(w["e"], dur)
-    lane = caption_lane.lanes(False)
-    ass = captions.to_ass(cw, 0.0, OUT_W, OUT_H, lane["caption_margin_v"])
-    hook, hook_src, hook_match = hooks.choose_hook(hook_text, cw)
-    ass = hooks.add_hook(ass, hook, lane["hook_margin_v"])
-    ass_path = os.path.join(out_dir, "clip.ass")
-    with open(ass_path, "w") as f:
-        f.write(ass)
-    log(f"hook: {hook!r} ({hook_src}, matches first 3 s: {hook_match}); {len(cw)} caption words")
+        # captions + hook (word times shifted onto the clip clock)
+        cw = [w for w in asr_fix.to_clip_time(words, s_f) if w["s"] < dur]
+        for w in cw:
+            w["e"] = min(w["e"], dur)
+        lane = caption_lane.lanes(False)
+        ass = captions.to_ass(cw, 0.0, OUT_W, OUT_H, lane["caption_margin_v"])
+        hook, hook_src, hook_match = hooks.choose_hook(hook_text, cw)
+        ass = hooks.add_hook(ass, hook, lane["hook_margin_v"])
+        ass_path = os.path.join(out_dir, "clip.ass")
+        with open(ass_path, "w") as f:
+            f.write(ass)
+        log(f"hook: {hook!r} ({hook_src}, matches first 3 s: {hook_match}); {len(cw)} caption words")
 
-    # one sampling pass: faces for the cam block, small frames for the subject tracker
-    t = time.monotonic()
-    mode = (cam_corner or "auto").strip().lower()
-    if mode == "none":
-        corners = []
-    elif cam_layout.norm_corner(mode):
-        corners = [cam_layout.norm_corner(mode)]
-    else:
-        corners = list(vision.CORNER_SEARCH)
-    smp = vision.sample(media, s_f, dur, src_w, src_h, corners)
-    cam, cam_search = vision.choose_cam(smp["faces"], smp["n"], src_w, src_h) if corners else (None, {})
-    use_cam = cam is not None
-    if corners and not use_cam:
-        notes.append("no facecam verified by face detection: gameplay-only layout")
-    rect = (tuple(cam_rect) if cam_rect else cam["rect"]) if use_cam else None
-    aspect = layout.PANEL_ASPECT if use_cam else 9 / 16
-    pw = layout.panel_wh(src_w, src_h)[0] if use_cam else src_h * 9 / 16
-    bounds = cam_layout.crop_bounds(rect, src_w, pw)
+        # one sampling pass: faces for the cam block, small frames for the subject tracker
+        t = time.monotonic()
+        mode = (cam_corner or "auto").strip().lower()
+        if mode == "none":
+            corners = []
+        elif cam_layout.norm_corner(mode):
+            corners = [cam_layout.norm_corner(mode)]
+        else:
+            corners = list(vision.CORNER_SEARCH)
+        smp = vision.sample(media, s_f, dur, src_w, src_h, corners)
+        cam, cam_search = vision.choose_cam(smp["faces"], smp["n"], src_w, src_h) if corners else (None, {})
+        use_cam = cam is not None
+        if corners and not use_cam:
+            notes.append("no facecam verified by face detection: gameplay-only layout")
+        rect = (tuple(cam_rect) if cam_rect else cam["rect"]) if use_cam else None
+        aspect = layout.PANEL_ASPECT if use_cam else 9 / 16
+        pw = layout.panel_wh(src_w, src_h)[0] if use_cam else src_h * 9 / 16
+        bounds = cam_layout.crop_bounds(rect, src_w, pw)
 
-    # subject track -> smoothed crop path for the gameplay panel
-    dets = [vision.detect_people(f, rect) for f in smp["small"]]
-    motion = track.centroid_x(vision.small_gray(smp["small"]), rect)
-    sub = subject.build(dets, motion)
-    cxs = smooth(sub["cx"], alpha=0.4, deadband=0.03)
-    pts = [(round(tt, 3), round(max(bounds[0], min(c * src_w - pw / 2, bounds[1])), 1))
-           for tt, c in zip(smp["times"], cxs)] or [(0.0, round((bounds[0] + bounds[1]) / 2, 1))]
-    xs = per_frame_x(pts, n, fps, bounds)
-    zs = punch_curve(n, min(config.PUNCH_TARGET, 0.05) if use_cam else config.PUNCH_TARGET)
-    bxs = boxes(xs, zs, src_w, src_h, bounds[0], aspect)
-    stats = path_stats(bxs, fps, src_w, src_h, src_h)
-    idx = [min(int(round(tt * fps)), n - 1) for tt in smp["times"]]
-    sub_plan = subject.inside_stats(sub["box"], smp["times"], [bxs[j][0] for j in idx],
-                                    [bxs[j][2] for j in idx], src_w)
-    stats["subject"] = sub_plan
+        # subject track -> smoothed crop path for the gameplay panel
+        dets = [vision.detect_people(f, rect) for f in smp["small"]]
+        motion = track.centroid_x(vision.small_gray(smp["small"]), rect)
+        sub = subject.build(dets, motion)
+        cxs = smooth(sub["cx"], alpha=0.4, deadband=0.03)
+        pts = [(round(tt, 3), round(max(bounds[0], min(c * src_w - pw / 2, bounds[1])), 1))
+               for tt, c in zip(smp["times"], cxs)] or [(0.0, round((bounds[0] + bounds[1]) / 2, 1))]
+        xs = per_frame_x(pts, n, fps, bounds)
+        zs = punch_curve(n, min(config.PUNCH_TARGET, 0.05) if use_cam else config.PUNCH_TARGET)
+        bxs = boxes(xs, zs, src_w, src_h, bounds[0], aspect)
+        stats = path_stats(bxs, fps, src_w, src_h, src_h)
+        idx = [min(int(round(tt * fps)), n - 1) for tt in smp["times"]]
+        sub_plan = subject.inside_stats(sub["box"], smp["times"], [bxs[j][0] for j in idx],
+                                        [bxs[j][2] for j in idx], src_w)
+        stats["subject"] = sub_plan
 
-    cbx = None
-    cam_info = {"found": use_cam, "mode": mode, "search": cam_search}
-    if use_cam:
-        path = layout.face_path(cam["obs"], n, fps)
-        cbx = layout.cam_boxes(path, layout.region_px(rect, src_w, src_h))
-        cam_info.update({"corner": cam["corner"], "face_hit_pct": cam["hit_pct"], "face_w_px": round(path[2], 1),
-                         "rect": list(rect), "box_px": [round(cbx[0][2]), round(cbx[0][3])],
-                         "upscale": round(layout.upscale(cbx), 2)})
-    stats["layout"] = "cam_top" if use_cam else "full"
-    stats["cam_block"] = cam_info
-    stats["panel"] = {"y0": layout.CAM_H if use_cam else 0, "h": layout.PANEL_H if use_cam else OUT_H}
-    stats["cam"] = {"rect": list(rect) if rect else None, "corner": cam["corner"] if use_cam else None,
-                    "how": "face-verified" if use_cam else "none",
-                    "excluded": not any(cam_layout.visible_in_crop(rect, b[0], b[2], src_w) for b in bxs)}
-    timings["track_sec"] = round(time.monotonic() - t, 1)
-    del smp
-    log(f"layout {stats['layout']}: cam {cam_info.get('corner')} face hits {cam_info.get('face_hit_pct')}%, "
-        f"subject tracked {sub_plan['tracked_pct']}% inside {sub_plan['inside_pct']}%, "
-        f"zoom max {stats['zoom_max'] * 100:.1f}%, pan max {stats['pan_max_px_s']:.0f}px/s")
+        cbx = None
+        cam_info = {"found": use_cam, "mode": mode, "search": cam_search}
+        if use_cam:
+            path = layout.face_path(cam["obs"], n, fps)
+            cbx = layout.cam_boxes(path, layout.region_px(rect, src_w, src_h))
+            cam_info.update({"corner": cam["corner"], "face_hit_pct": cam["hit_pct"], "face_w_px": round(path[2], 1),
+                             "rect": list(rect), "box_px": [round(cbx[0][2]), round(cbx[0][3])],
+                             "upscale": round(layout.upscale(cbx), 2)})
+        stats["layout"] = "cam_top" if use_cam else "full"
+        stats["cam_block"] = cam_info
+        stats["panel"] = {"y0": layout.CAM_H if use_cam else 0, "h": layout.PANEL_H if use_cam else OUT_H}
+        stats["cam"] = {"rect": list(rect) if rect else None, "corner": cam["corner"] if use_cam else None,
+                        "how": "face-verified" if use_cam else "none",
+                        "excluded": not any(cam_layout.visible_in_crop(rect, b[0], b[2], src_w) for b in bxs)}
+        timings["track_sec"] = round(time.monotonic() - t, 1)
+        del smp
+        log(f"layout {stats['layout']}: cam {cam_info.get('corner')} face hits {cam_info.get('face_hit_pct')}%, "
+            f"subject tracked {sub_plan['tracked_pct']}% inside {sub_plan['inside_pct']}%, "
+            f"zoom max {stats['zoom_max'] * 100:.1f}%, pan max {stats['pan_max_px_s']:.0f}px/s")
+
+        # the opening must be real motion in the strip that is SHOWN (same gate as the grade, never loosened)
+        ok_open, t_ok, oinfo = shown_opening(media, s_f, fps, bxs[0], src_w)
+        trim_info["asked"] = [start, end]
+        trim_info["opening_check"] = {"ok": bool(ok_open), "tries": attempt + 1, "shift_s": round(shift, 3), **oinfo}
+        if ok_open:
+            break
+        if t_ok is None or attempt == OPEN_TRIES - 1:
+            raise ValueError(f"opening is frozen or silent in the shown strip for {trim.START_SEARCH:g} s after "
+                             f"{s_f:.2f}s: skip this moment ({oinfo})")
+        open_notes.append(f"opening froze in the shown strip: start moved +{t_ok:.2f}s to {s_f + t_ok:.2f}s")
+        log(f"opening: shown strip is not moving at {s_f:.2f}s, retrying from {s_f + t_ok:.2f}s")
+        shift = s_f + t_ok - start
+
+    notes[:0] = open_notes
 
     # audio: measure, then normalise to -14 LUFS (stream audio only)
     t = time.monotonic()

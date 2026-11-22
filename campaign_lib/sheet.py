@@ -108,6 +108,19 @@ class SheetIO:
         return len(data)
 
 
+REACH_CELL = "C10"  # next to the Copy link cell (B10). Only opens the Reach page; nothing is ever submitted.
+
+
+def reach_payload(cfg):
+    """Tappable "Open Reach submit page" cell. A formula, so it must be written USER_ENTERED
+    (the rest of the sheet is RAW). The URL is the single config value campaign.json reach_url."""
+    url = cfg.get("reach_url")
+    if not url:
+        return []
+    return [{"range": "%s!%s" % (CAMPAIGN, REACH_CELL),
+             "values": [['=HYPERLINK("%s","Open Reach submit page")' % url]]}]
+
+
 def init_payload(cfg, now, items=None):
     """Initial content for a fresh campaign sheet: the real one (items = the campaign sources, all
     QUEUED) or a throwaway test sheet (items = fake clips). Returns UPDATE_VALUES_BATCH `data`."""

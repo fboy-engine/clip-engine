@@ -10,6 +10,7 @@ from the two nearest SR frames (or, as a fallback, the nearest SR frame plus a l
 """
 import math
 import subprocess
+import tempfile
 import time
 
 import numpy as np
@@ -27,8 +28,22 @@ OLD_SHARPEN = (0.35, 1.2)     # the previous (lanczos) chain's unsharp, kept so 
 
 # ---- geometry (pure) --------------------------------------------------------------------------------------
 
+def _even_span(lo, hi, rlo, rhi):
+    """[lo, hi) widened to even edges but kept inside [rlo, rhi) (the region/frame), start and size both even.
+    ffmpeg's crop rounds an odd x/y/w/h DOWN to the 4:2:0 chroma grid, so an odd ROI is cut at another place and
+    size than the code assumes (the real render died on a 393 px wide ROI)."""
+    a = lo - (lo % 2)
+    if a < rlo:
+        a += 2
+    b = hi + (hi % 2)
+    if b > rhi:
+        b -= 2
+    return a, b
+
+
 def roi_union(boxes, region, margin=cam_sr.ROI_MARGIN, src_wh=None):
-    """Integer ROI (x, y, w, h) holding every per-frame cam box plus a margin, inside the cam region (and the frame)."""
+    """Integer ROI (x, y, w, h) holding every per-frame cam box plus a margin, inside the cam region (and the frame).
+    x, y, w and h are all EVEN (see _even_span): the ffmpeg crop and the code then agree on the cut."""
     rx0, ry0, rx1, ry1 = region
     if src_wh:
         rx1, ry1 = min(rx1, src_wh[0]), min(ry1, src_wh[1])
@@ -36,6 +51,8 @@ def roi_union(boxes, region, margin=cam_sr.ROI_MARGIN, src_wh=None):
     y0 = max(ry0, int(math.floor(min(b[1] for b in boxes))) - margin)
     x1 = min(rx1, int(math.ceil(max(b[0] + b[2] for b in boxes))) + margin)
     y1 = min(ry1, int(math.ceil(max(b[1] + b[3] for b in boxes))) + margin)
+    x0, x1 = _even_span(x0, x1, rx0, rx1)
+    y0, y1 = _even_span(y0, y1, ry0, ry1)
     return x0, y0, x1 - x0, y1 - y0
 
 
@@ -146,7 +163,7 @@ class CamStream:
         self.cam_fps, self.blend = plan["cam_fps"], plan["blend"]
         self.interp = plan.get("interp", "flow")
         self.fps_arg, self.log, self.spawn = fps_arg, log, spawn
-        self.proc = None
+        self.proc, self.err = None, None
         self.clean, self.mixed, self.lan4 = {}, {}, {}
         self.read_idx = -1
         self.pair = None
@@ -155,8 +172,17 @@ class CamStream:
 
     # -- prepass reading
     def _open(self):
+        self.err = tempfile.TemporaryFile()          # a file, not a pipe: ffmpeg can never block on a full stderr
         self.proc = self.spawn(prepass_cmd(self.media, self.start, self.dur, self.cam_fps, self.plan.get("deblock_vf", ""), self.roi),
-                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                               stdout=subprocess.PIPE, stderr=self.err)
+
+    def _stderr_tail(self):
+        try:
+            self.err.flush()
+            self.err.seek(0)
+            return tail(self.err.read())
+        except Exception:
+            return "(no stderr captured)"
 
     def _read_to(self, k):
         if self.proc is None:
@@ -168,7 +194,9 @@ class CamStream:
             elif self.read_idx >= 0:
                 img = self.clean[self.read_idx]            # past the end: hold the last frame
             else:
-                raise RuntimeError("cam prepass produced no frames")
+                raise RuntimeError(f"cam prepass produced no frames: ROI {self.roi[2]}x{self.roi[3]} at ({self.roi[0]},{self.roi[1]}), "
+                                   f"window start={self.start:.3f} dur={self.dur:.3f} at {self.cam_fps} fps, frames read {self.read_idx + 1}, "
+                                   f"got {len(buf)} of {self.fsize} bytes; ffmpeg stderr tail: {self._stderr_tail()}")
             self.read_idx += 1
             self.clean[self.read_idx] = img
         for old in [j for j in self.clean if j < k - 1]:
@@ -273,6 +301,9 @@ class CamStream:
             except Exception:
                 pass
             self.proc = None
+        if self.err is not None:
+            self.err.close()
+            self.err = None
 
 
 def read_frames(cmd, w, h, spawn=subprocess.Popen):
@@ -328,16 +359,46 @@ def ghost_test(media, start, dur, fps, fps_arg, boxes, roi, plan, up, log=print,
 
 # ---- planning, probing, reporting (the render calls these) -----------------------------------------------------
 
+def grab_cmd(media, t, roi, prefix="", suffix=""):
+    x, y, w, h = roi
+    vf = ",".join(s for s in (prefix, f"crop={w}:{h}:{x}:{y}", suffix) if s)
+    return ["ffmpeg", "-v", "error", "-nostdin", "-ss", f"{t:.3f}", "-i", media, "-frames:v", "1", "-vf", vf,
+            "-sws_flags", "lanczos+accurate_rnd+full_chroma_int", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
+
+
 def grab_roi(media, t, roi, prefix="", suffix="", run=subprocess.run):
     """One real ROI frame at time t (filters before the crop = on the full frame, after = on the ROI), BGR or None."""
     x, y, w, h = roi
-    vf = ",".join(s for s in (prefix, f"crop={w}:{h}:{x}:{y}", suffix) if s)
-    cmd = ["ffmpeg", "-v", "error", "-nostdin", "-ss", f"{t:.3f}", "-i", media, "-frames:v", "1", "-vf", vf,
-           "-sws_flags", "lanczos+accurate_rnd+full_chroma_int", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
-    p = run(cmd, capture_output=True)
+    p = run(grab_cmd(media, t, roi, prefix, suffix), capture_output=True)
     if len(p.stdout) != w * h * 3:
         return None
     return np.frombuffer(p.stdout, np.uint8).reshape(h, w, 3).copy()
+
+
+def tail(data, n=600):
+    """Last n characters of ffmpeg's stderr (bytes or str), one line per ';'."""
+    if isinstance(data, bytes):
+        data = data.decode("utf-8", "replace")
+    data = (data or "").strip()
+    return data[-n:].replace("\n", " ; ") if data else "(empty)"
+
+
+def grab_failure(media, t, roi, prefix="", suffix="", run=subprocess.run, src_wh=None, region=None, start=None, dur=None):
+    """Why grab_roi gave nothing: re-runs the SAME ffmpeg command once and reports the numbers (crop rect, window,
+    bytes got vs expected, frames, exit code) and the stderr tail."""
+    x, y, w, h = roi
+    cmd = grab_cmd(media, t, roi, prefix, suffix)
+    try:
+        p = run(cmd, capture_output=True)
+        got, rc, err = len(p.stdout), p.returncode, tail(p.stderr)
+    except Exception as e:        # ffmpeg missing, etc.
+        got, rc, err = 0, None, f"{type(e).__name__}: {e}"
+    want = w * h * 3
+    frames = got / want if want else 0
+    odd = " ODD ROI (ffmpeg crop rounds odd sizes down on 4:2:0)" if (x % 2 or y % 2 or w % 2 or h % 2) else ""
+    return (f"crop {w}x{h} at ({x},{y}){odd}; cam region {region}; source {src_wh}; clip window start={start} dur={dur}, "
+            f"seek t={t:.3f}s; filters before crop: {prefix or '-'}, after: {suffix or '-'}; ffmpeg exit {rc}, "
+            f"read {got} bytes, expected {want} for 1 frame ({frames:.3f} frames); ffmpeg stderr tail: {err}")
 
 
 def time_sr(up, img, n=2):
@@ -361,7 +422,9 @@ def prepare(media, start, dur, fps, fps_arg, boxes, region, src_wh, b3, up, log=
     deb = b3.get("deblock_vf", "")
     img = grab(media, start + dur / 2, roi, deb, cam_sr.DENOISE_VF)
     if img is None:
-        raise ValueError("cam enhance: could not cut the cam ROI out of the source")
+        raise ValueError("cam enhance: could not cut the cam ROI out of the source: "
+                         + grab_failure(media, start + dur / 2, roi, deb, cam_sr.DENOISE_VF, src_wh=src_wh, region=region,
+                                        start=start, dur=dur))
     sec = time_sr(up, img)
     cam_fps = cam_sr.plan_cam_fps(sec, dur, cap_fps)
     log(f"cam SR: ROI {roi[2]}x{roi[3]} px, {sec:.2f} s per frame -> {cam_fps} fps for a {dur:.1f} s clip")

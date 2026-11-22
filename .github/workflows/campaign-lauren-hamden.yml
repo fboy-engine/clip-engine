@@ -1,0 +1,50 @@
+# Lauren Hamden campaign. Own file, own concurrency group, never touches clip.yml.
+# Manual trigger only. More modes are added in later build steps (B2-B7).
+name: campaign-lauren-hamden
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "linkcheck = metadata-only probe of all 10 sources (B1)"
+        required: true
+        default: linkcheck
+        type: choice
+        options:
+          - linkcheck
+
+concurrency:
+  group: campaign-lauren-hamden
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  linkcheck:
+    if: ${{ inputs.mode == 'linkcheck' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install yt-dlp
+        run: pip install -U yt-dlp && yt-dlp --version
+      - name: Probe all sources (metadata only, no download)
+        run: python campaigns/lauren-hamden/linkcheck.py | tee linkcheck.txt
+      - name: Summary
+        if: always()
+        run: |
+          echo '### Lauren Hamden link check' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat linkcheck.txt >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linkcheck-${{ github.run_id }}
+          path: |
+            out/linkcheck.json
+            linkcheck.txt

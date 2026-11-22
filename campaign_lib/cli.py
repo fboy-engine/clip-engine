@@ -43,6 +43,10 @@ def cmd_init(cfg, a):
     data = sheet.init_payload(cfg, now, items)
     io.c.execute("GOOGLESHEETS_UPDATE_VALUES_BATCH",
                  {"spreadsheet_id": io.id, "valueInputOption": "RAW", "data": data})
+    reach = sheet.reach_payload(cfg)
+    if reach:  # formula cell: USER_ENTERED, separate call
+        io.c.execute("GOOGLESHEETS_UPDATE_VALUES_BATCH",
+                     {"spreadsheet_id": io.id, "valueInputOption": "USER_ENTERED", "data": reach})
     print("init OK: %d ranges, %d queue rows" % (len(data), len(data[1]["values"]) - 1))
     return 0
 

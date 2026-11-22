@@ -13,7 +13,7 @@
   "clip": {"min_s": 25, "max_s": 45},
   "timings": {"approve_gap_min": 150, "submit_window_min": 30},
   "display_tz": "Asia/Karachi",
-  "sheet": {"title": "Clip Engine - Lauren Hamden GTA6", "id": null},
+  "sheet": {"title": "Clip Engine - Lauren Hamden GTA6", "id": "1VYtK6mm40NXyB6ixLRoMtsc5yDxFXX9u_FUCcLGLvh8"},
   "workflow": "campaign-lauren-hamden.yml",
   "concurrency_group": "campaign-lauren-hamden",
   "state_keys": {"cache_prefix": "lauren-hamden-", "used_moments": "lauren-hamden-used-moments"},

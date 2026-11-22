@@ -1,17 +1,41 @@
 # Lauren Hamden campaign. Own file, own concurrency group, never touches clip.yml.
-# Manual trigger only. More modes are added in later build steps (B2-B7).
+# Manual trigger only. No Instagram call exists in any mode here.
 name: campaign-lauren-hamden
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "linkcheck = metadata-only probe of all 10 sources (B1)"
+        description: "linkcheck = metadata-only probe of the 10 sources | secrets = set/NOT SET only | probe = read the sheet via Composio | init = write the sheet layout | tick = one loop pass"
         required: true
-        default: linkcheck
+        default: secrets
         type: choice
         options:
+          - secrets
+          - probe
+          - init
+          - tick
           - linkcheck
+      sheet_id:
+        description: "Google Sheet id (empty = campaign.json sheet.id)"
+        required: false
+        default: ""
+        type: string
+      fake:
+        description: "init: number of FAKE clips to load (0 = the real 10 sources). tick: 1 = fake clips only, 0 = real"
+        required: false
+        default: "0"
+        type: string
+      gap_min:
+        description: "tick, tests only: override the 150 min approve gap"
+        required: false
+        default: ""
+        type: string
+      submit_min:
+        description: "tick, tests only: override the 30 min submit window"
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: campaign-lauren-hamden
@@ -21,6 +45,47 @@ permissions:
   contents: read
 
 jobs:
+  cli:
+    if: ${{ inputs.mode != 'linkcheck' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      MODE: ${{ inputs.mode }}
+      SHEET_ID: ${{ inputs.sheet_id }}
+      FAKE: ${{ inputs.fake }}
+      GAP_MIN: ${{ inputs.gap_min }}
+      SUBMIT_MIN: ${{ inputs.submit_min }}
+      IG_ACCESS_TOKEN_LAUREN: ${{ secrets.IG_ACCESS_TOKEN_LAUREN }}
+      IG_USER_ID_LAUREN: ${{ secrets.IG_USER_ID_LAUREN }}
+      COMPOSIO_API_KEY: ${{ secrets.COMPOSIO_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run mode
+        run: |
+          args=()
+          [ -n "$SHEET_ID" ] && args+=(--sheet-id "$SHEET_ID")
+          if [ "$MODE" = "init" ] || [ "$MODE" = "tick" ]; then
+            if [ "$FAKE" != "0" ] && [ -n "$FAKE" ]; then
+              if [ "$MODE" = "init" ]; then args+=(--fake "$FAKE"); else args+=(--fake); fi
+            fi
+          fi
+          if [ "$MODE" = "tick" ]; then
+            [ -n "$GAP_MIN" ] && args+=(--gap-min "$GAP_MIN")
+            [ -n "$SUBMIT_MIN" ] && args+=(--submit-min "$SUBMIT_MIN")
+          fi
+          python -m campaign_lib.cli "$MODE" "${args[@]}" | tee cli.txt
+      - name: Summary
+        if: always()
+        run: |
+          echo "### campaign $MODE" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat cli.txt >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
   linkcheck:
     if: ${{ inputs.mode == 'linkcheck' }}
     runs-on: ubuntu-latest

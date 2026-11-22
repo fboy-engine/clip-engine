@@ -183,3 +183,21 @@ class TruePeak(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertEqual(len(r["passes"]), 4)
         shutil.rmtree(d)
+
+
+class CaptionSeam(unittest.TestCase):
+    WORDS = [{"w": "Nah", "s": 1.0, "e": 1.3}, {"w": "you", "s": 1.3, "e": 1.5}, {"w": "know", "s": 1.5, "e": 1.8},
+             {"w": "what", "s": 1.8, "e": 2.1}, {"w": "Lucia", "s": 2.4, "e": 2.8}, {"w": "lock", "s": 2.8, "e": 3.1},
+             {"w": "the", "s": 3.1, "e": 3.2}, {"w": "trunk", "s": 3.2, "e": 3.6}]
+
+    def test_cam_on_top_centres_every_caption_on_the_seam(self):
+        ass, lane, _ = rc.build_ass(self.WORDS, "", True, (0.0, 0.4, 0.2, 0.2))
+        self.assertEqual(lane["seam_y"], 540)
+        lines = [l for l in ass.splitlines() if l.startswith("Dialogue:") and ",Hook," not in l]
+        self.assertTrue(lines)
+        for l in lines:
+            self.assertIn("\\an5\\pos(540,540)", l)
+
+    def test_no_cam_keeps_bottom_lane(self):
+        _, lane, _ = rc.build_ass(self.WORDS, "", False, None)
+        self.assertIsNone(lane["seam_y"])

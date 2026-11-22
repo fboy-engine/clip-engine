@@ -402,6 +402,17 @@ def diag_lines(dg):
 
 # ---- the render ----------------------------------------------------------
 
+def build_ass(cw, hook_text, use_cam, rect):
+    """ASS for the clip. With the cam block on top every caption line is centred on the seam (y=540); the
+    layout must be known first, which is why the render calls this after the cam check."""
+    lane = caption_lane.lanes(use_cam, rect, cam_top=use_cam)
+    hook, hook_src, hook_match = hooks.choose_hook(asr_fix.mask_text(hook_text), cw)
+    cap_words = captions.drop_hook_words(cw, hook, hooks.HOOK_SHOW)      # the hook shows the opening words
+    ass = captions.to_ass(cap_words, 0.0, OUT_W, OUT_H, lane["caption_margin_v"], lane["seam_y"])
+    ass = hooks.add_hook(ass, hook, lane["hook_margin_v"])
+    return ass, lane, (hook, hook_src, hook_match)
+
+
 def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=None, words=None,
            model="large-v3", cache_dir=None, preset=config.PRESET, log=print, payoff="", vod_id=""):
     """Returns the render.json dict (also written to out_dir). Raises on anything it cannot do honestly."""
@@ -439,16 +450,6 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         for w in cw:
             w["e"] = min(w["e"], dur)
         cw = asr_fix.mask_profanity(cw)
-        lane = caption_lane.lanes(False)
-        hook, hook_src, hook_match = hooks.choose_hook(asr_fix.mask_text(hook_text), cw)
-        cap_words = captions.drop_hook_words(cw, hook, hooks.HOOK_SHOW)      # the hook shows the opening words
-        ass = captions.to_ass(cap_words, 0.0, OUT_W, OUT_H, lane["caption_margin_v"], lane["seam_y"])
-        ass = hooks.add_hook(ass, hook, lane["hook_margin_v"])
-        ass_path = os.path.join(out_dir, "clip.ass")
-        with open(ass_path, "w") as f:
-            f.write(ass)
-        log(f"hook: {hook!r} ({hook_src}, matches first 3 s: {hook_match}); {len(cw)} caption words")
-
         # one sampling pass: faces for the cam block, small frames for the subject tracker
         t = time.monotonic()
         mode = (cam_corner or "auto").strip().lower()
@@ -471,6 +472,14 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         aspect = layout.PANEL_ASPECT if use_cam else 9 / 16
         pw = layout.panel_wh(src_w, src_h)[0] if use_cam else src_h * 9 / 16
         bounds = panel_bounds(rect, zones, src_w, pw)
+
+        # captions + hook: laid out only now that the layout is known (cam block on top -> captions on the seam)
+        ass, lane, (hook, hook_src, hook_match) = build_ass(cw, hook_text, use_cam, rect)
+        ass_path = os.path.join(out_dir, "clip.ass")
+        with open(ass_path, "w") as f:
+            f.write(ass)
+        log(f"hook: {hook!r} ({hook_src}, matches first 3 s: {hook_match}); {len(cw)} caption words; "
+            f"captions {'on the seam y=' + str(lane['seam_y']) if lane['seam_y'] else 'bottom lane'}")
 
         # subject track -> smoothed crop path for the gameplay panel
         dets = [vision.detect_people(f, rect) for f in smp["small"]]

@@ -3,6 +3,7 @@ through the user's connected Google Sheets account. The API key comes from the C
 env var and is never printed."""
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -12,6 +13,16 @@ BASE = os.environ.get("COMPOSIO_BASE", "https://backend.composio.dev/api/v3")
 
 class ComposioError(RuntimeError):
     pass
+
+
+_KEYLIKE = re.compile(r"\b(?:ck|ak|sk|pk)_[A-Za-z0-9*_\-]*")
+
+
+def scrub(text, key=""):
+    """Never let any part of a key reach a log: the full key, and Composio's own masked echo of it."""
+    if key:
+        text = text.replace(key, "***")
+    return _KEYLIKE.sub("***", text)
 
 
 def find_key(obj, key):
@@ -51,7 +62,7 @@ class Client:
                 with urllib.request.urlopen(req, timeout=timeout) as r:
                     return json.loads(r.read().decode() or "{}")
             except urllib.error.HTTPError as e:
-                text = e.read().decode(errors="replace").replace(self.api_key, "***")[:500]
+                text = scrub(e.read().decode(errors="replace"), self.api_key)[:500]
                 if attempt == 1 and e.code in (429, 500, 502, 503, 504):
                     time.sleep(3)
                     continue

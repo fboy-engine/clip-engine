@@ -4,11 +4,13 @@ env var and is never printed."""
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
 
 BASE = os.environ.get("COMPOSIO_BASE", "https://backend.composio.dev/api/v3")
+AUTH_HEADER, ALT_AUTH_HEADER = "x-api-key", "x-consumer-api-key"
 
 
 class ComposioError(RuntimeError):
@@ -50,25 +52,37 @@ class Client:
         self.account_id = account_id or os.environ.get("COMPOSIO_CONNECTED_ACCOUNT_ID") or None
         self.user_id = user_id
         self.toolkit = toolkit
+        # COMPOSIO_AUTH_HEADER pins the header (no fallback); default x-api-key, then x-consumer-api-key on a 401.
+        self.auth_header = os.environ.get("COMPOSIO_AUTH_HEADER") or AUTH_HEADER
 
     def _call(self, method, path, body=None, timeout=60):
         data = json.dumps(body).encode() if body is not None else None
-        for attempt in (1, 2):
+        retried = switched = False
+        while True:
             req = urllib.request.Request(
                 BASE + path, data=data, method=method,
-                headers={"x-api-key": self.api_key, "Content-Type": "application/json",
+                headers={self.auth_header: self.api_key, "Content-Type": "application/json",
                          "Accept": "application/json", "User-Agent": "campaign-lib/1.0"})
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as r:
                     return json.loads(r.read().decode() or "{}")
             except urllib.error.HTTPError as e:
                 text = scrub(e.read().decode(errors="replace"), self.api_key)[:500]
-                if attempt == 1 and e.code in (429, 500, 502, 503, 504):
+                if e.code == 401 and not switched and not os.environ.get("COMPOSIO_AUTH_HEADER"):
+                    # Fallback: some Composio keys (consumer keys) only work in x-consumer-api-key.
+                    switched = True
+                    self.auth_header = ALT_AUTH_HEADER
+                    print("note: 401 with %s, retrying once with %s" % (AUTH_HEADER, ALT_AUTH_HEADER),
+                          file=sys.stderr)
+                    continue
+                if not retried and e.code in (429, 500, 502, 503, 504):
+                    retried = True
                     time.sleep(3)
                     continue
                 raise ComposioError("HTTP %s on %s %s: %s" % (e.code, method, path.split("?")[0], text))
             except (urllib.error.URLError, TimeoutError) as e:
-                if attempt == 1:
+                if not retried:
+                    retried = True
                     time.sleep(3)
                     continue
                 raise ComposioError("network error on %s: %s" % (path.split("?")[0], e))

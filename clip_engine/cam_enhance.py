@@ -19,6 +19,8 @@ from . import cam_sr, layout, quality
 OUT_W, CAM_H = 1080, layout.CAM_H
 S4 = cam_sr.SR_FACTOR
 GHOST_TEST_SEC = 1.5
+CAM_FPS_CAP = 20              # user decision: 15 fps, 20 if the time allows
+PROBE_FRAMES = 6              # output frames of the real render that are measured against the real crop and the old chain
 NEAREST_DETAIL = 0.3          # share of the real-frame detail added to the nearest SR frame in the fallback mode
 OLD_SHARPEN = (0.35, 1.2)     # the previous (lanczos) chain's unsharp, kept so "old vs new" is the real old chain
 
@@ -322,3 +324,99 @@ def ghost_test(media, start, dur, fps, fps_arg, boxes, roi, plan, up, log=print,
     return {"ok": bool(ok), "detail": detail, "interp": plan.get("interp", "flow"), "window_start": round(i0 / fps, 2),
             "keyframes": len(key), "inbetween": len(inter), "motion": round(float(np.mean(mot)) if mot else 0.0, 3),
             "sr_seconds": round(stream.sr_sec, 1)}
+
+
+# ---- planning, probing, reporting (the render calls these) -----------------------------------------------------
+
+def grab_roi(media, t, roi, prefix="", suffix="", run=subprocess.run):
+    """One real ROI frame at time t (filters before the crop = on the full frame, after = on the ROI), BGR or None."""
+    x, y, w, h = roi
+    vf = ",".join(s for s in (prefix, f"crop={w}:{h}:{x}:{y}", suffix) if s)
+    cmd = ["ffmpeg", "-v", "error", "-nostdin", "-ss", f"{t:.3f}", "-i", media, "-frames:v", "1", "-vf", vf,
+           "-sws_flags", "lanczos+accurate_rnd+full_chroma_int", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
+    p = run(cmd, capture_output=True)
+    if len(p.stdout) != w * h * 3:
+        return None
+    return np.frombuffer(p.stdout, np.uint8).reshape(h, w, 3).copy()
+
+
+def time_sr(up, img, n=2):
+    """Median seconds per 4x call on a production-size ROI, after one warm-up call (model load, memory)."""
+    up.run4(img)
+    ts = []
+    for _ in range(n):
+        t = time.perf_counter()
+        up.run4(img)
+        ts.append(time.perf_counter() - t)
+    return float(np.median(ts))
+
+
+def prepare(media, start, dur, fps, fps_arg, boxes, region, src_wh, b3, up, log=print, spawn=subprocess.Popen,
+            grab=grab_roi, cap_fps=CAM_FPS_CAP):
+    """Everything before the first frame: the ROI, the SR rate for THIS clip (highest of 20/15/12/10/8 that fits
+    the time budget on the measured s/frame), the in-between mode (optical flow; if the ghost test sees double
+    edges: nearest SR frame + real detail; if that ghosts too the render refuses) and the CamStream.
+    b3 = the benchmark's chain (cam_bench.json): SR share and deblock filter. Returns (stream, info)."""
+    roi = roi_union(boxes, region, src_wh=src_wh)
+    deb = b3.get("deblock_vf", "")
+    img = grab(media, start + dur / 2, roi, deb, cam_sr.DENOISE_VF)
+    if img is None:
+        raise ValueError("cam enhance: could not cut the cam ROI out of the source")
+    sec = time_sr(up, img)
+    cam_fps = cam_sr.plan_cam_fps(sec, dur, cap_fps)
+    log(f"cam SR: ROI {roi[2]}x{roi[3]} px, {sec:.2f} s per frame -> {cam_fps} fps for a {dur:.1f} s clip")
+    if cam_fps is None:
+        raise ValueError(f"cam enhance: super-resolution takes {sec:.2f} s per frame, too slow for a {dur:.1f} s clip "
+                         f"even at {cam_sr.B3_FPS_TIERS[-1]} fps (budget {cam_sr.SR_BUDGET_SEC} s): refusing the clip, "
+                         f"plain lanczos is not shipped")
+    plan = {"cam_fps": cam_fps, "blend": b3["blend"], "deblock_vf": deb, "interp": "flow"}
+    ghost = ghost_test(media, start, dur, fps, fps_arg, boxes, roi, plan, up, log, spawn)
+    log(f"ghost test (optical flow): {'ok' if ghost['ok'] else 'FAILED'} - {ghost['detail']}")
+    flow_failed = None
+    if not ghost["ok"]:
+        flow_failed = ghost["detail"]
+        plan["interp"] = "nearest"
+        ghost = ghost_test(media, start, dur, fps, fps_arg, boxes, roi, plan, up, log, spawn)
+        log(f"ghost test (nearest SR frame + real detail): {'ok' if ghost['ok'] else 'FAILED'} - {ghost['detail']}")
+        if not ghost["ok"]:
+            raise ValueError("cam enhance: in-between frames show double edges with both the optical-flow and the "
+                             f"nearest-frame mode (flow: {flow_failed}; nearest: {ghost['detail']}): refusing the clip")
+    stream = CamStream(media, start, dur, fps, boxes, roi, plan, up, fps_arg, log, spawn)
+    return stream, {"roi": list(roi), "sec_per_frame": round(sec, 3), "plan": dict(plan), "ghost": ghost,
+                    "flow_failed": flow_failed, "deblock": b3.get("deblock", ""), "b3_cam_fps": b3.get("cam_fps")}
+
+
+def probe_indices(n, k=PROBE_FRAMES):
+    return sorted({min(n - 1, int((j + 0.5) / k * n)) for j in range(k)})
+
+
+def new_probe(n, k=PROBE_FRAMES):
+    return {"idx": set(probe_indices(n, k)), "rows": [], "old_rows": [], "pairs": []}
+
+
+def probe_frame(probe, i, block, real_roi, box, roi_xy, keep=3):
+    """Measure one finished output block against the untouched real crop, and the OLD chain on the same frame."""
+    real = np.ascontiguousarray(real_roi)
+    ref = real_small(real, box, roi_xy)
+    old = old_block(real, box, roi_xy)
+    probe["rows"].append(block_metrics(block, ref, box))
+    probe["old_rows"].append(block_metrics(old, ref, box))
+    if len(probe["pairs"]) < keep:
+        probe["pairs"].append((i, old, block.copy()))
+
+
+def quality_report(stream, info, probe):
+    """cam_quality for render.json: measured on the frames the render really produced."""
+    enh, old = mean_rows(probe["rows"]), mean_rows(probe["old_rows"])
+    s = stream.info()
+    gate = cam_sr.gate_numbers(enh, old)
+    return {"method": "realesrgan", "chain": (f"deblock {info.get('deblock') or 'none'} (full frame) + hqdn3d + Real-ESRGAN x4 on the ROI at "
+                                              f"{s['cam_fps']} fps, {s['interp']} in-betweens, {int(round(s['blend'] * 100))}% SR / "
+                                              f"{100 - int(round(s['blend'] * 100))}% lanczos, sub-pixel crop to 1080x540, unsharp "
+                                              f"{cam_sr.UNSHARP_AMOUNT} + grain {cam_sr.GRAIN_SIGMA}"),
+            "cam_fps": s["cam_fps"], "sr_fps": s["cam_fps"], "blend": s["blend"], "sr_share": s["blend"], "interp": s["interp"],
+            "deblock": info.get("deblock") or "none", "roi": s["roi"], "sr_frames": s["sr_frames"],
+            "sr_seconds": s["sr_seconds"], "flow_seconds": s["flow_seconds"], "sec_per_sr_frame": s["sec_per_sr_frame"],
+            "enhanced": enh, "lanczos": old, "fidelity": enh["fidelity"], "blockiness": enh["blockiness"], "edge": enh["edge"],
+            "ghost": info.get("ghost"), "ghost_ok": bool((info.get("ghost") or {}).get("ok")),
+            "flow_failed": info.get("flow_failed"), "gate": gate, "probe_frames": len(probe["rows"])}

@@ -14,8 +14,8 @@ from fractions import Fraction
 
 import numpy as np
 
-from . import (asr_fix, balance, caption_lane, captions, cam_layout, config, download, exclusion, hooks, layout,
-               select_clean, subject, track, transcribe, trim, vision)
+from . import (asr_fix, balance, caption_lane, captions, cam_enhance, cam_layout, cam_sr, config, download, exclusion, hooks,
+               layout, select_clean, subject, track, transcribe, trim, vision)
 from .cropplan import punch_curve, smooth
 
 OUT_W, OUT_H = config.OUT_W, config.OUT_H
@@ -225,8 +225,31 @@ def denoise(img):
     return cv2.bilateralFilter(img, 5, 20, 5)
 
 
-def render_frames(media, start, n, fps, bxs, src_w, src_h, enc_cmd, enc_log, cam_bxs=None, cam_region=None):
-    """cam_bxs None: one full-height 9:16 crop. Otherwise cam block on top, gameplay panel below."""
+def load_b3(out_dir):
+    """The cam chain the benchmark step chose (out/cam_bench.json, key b3). Raises a clear ValueError when there is
+    none or when it says the quality gate failed or only plain lanczos is left: that is never shipped."""
+    p = os.path.join(out_dir, "cam_bench.json")
+    if not os.path.isfile(p):
+        raise ValueError("cam benchmark step must run before the render (no cam_bench.json in the output folder)")
+    with open(p) as f:
+        d = json.load(f)
+    if d.get("error"):
+        raise ValueError(f"cam benchmark failed, so the cam block cannot be enhanced: {d['error']}")
+    b3 = d.get("b3")
+    if not b3:
+        raise ValueError("cam_bench.json has no b3 section (benchmark from an older build)")
+    if b3.get("method") == "lanczos":
+        why = "; ".join(f"{k}: {v}" for k, v in (b3.get("rejected") or {}).items()) or b3.get("reason", "")
+        raise ValueError(f"plain lanczos is not shipped: no neural upscaler is usable ({why})")
+    if not b3.get("ok") or b3.get("blend") is None:
+        raise ValueError("cam quality gate failed in the benchmark: " + "; ".join(b3.get("reasons") or ["no SR share passes"]))
+    return b3
+
+
+def render_frames(media, start, n, fps, bxs, src_w, src_h, enc_cmd, enc_log, cam_bxs=None, cam_region=None,
+                  cam_stream=None, probe=None):
+    """cam_bxs None: one full-height 9:16 crop. Otherwise cam block on top, gameplay panel below. With a cam_stream
+    (B3) the block comes from the enhancement chain; without one the old bilateral + lanczos4 + unsharp path runs."""
     import cv2
     size = src_w * src_h * 3
     panel_h = layout.PANEL_H if cam_bxs else OUT_H
@@ -245,7 +268,14 @@ def render_frames(media, start, n, fps, bxs, src_w, src_h, enc_cmd, enc_log, cam
                     short += 1
                 out = cv2.warpAffine(last, affine(bxs[i]), (OUT_W, panel_h), flags=cv2.INTER_LANCZOS4,
                                      borderMode=cv2.BORDER_REPLICATE)
-                if cam_bxs:
+                if cam_bxs and cam_stream is not None:
+                    rx, ry, rw, rh = cam_stream.roi
+                    real_roi = last[ry:ry + rh, rx:rx + rw]
+                    blk = cam_stream.block(i, real_roi)
+                    if probe is not None and i in probe["idx"]:
+                        cam_enhance.probe_frame(probe, i, blk, real_roi, cam_bxs[min(i, len(cam_bxs) - 1)], (rx, ry))
+                    out = np.vstack([blk, out])
+                elif cam_bxs:
                     cb, csrc = cam_bxs[i], last
                     if cam_region:      # denoise the small crop, then lanczos up to 1080x540, then a light sharpen
                         rx0, ry0, rx1, ry1 = cam_region
@@ -259,6 +289,8 @@ def render_frames(media, start, n, fps, bxs, src_w, src_h, enc_cmd, enc_log, cam
             enc.stdin.close()
             dec.stdout.close()
             dec.wait()
+            if cam_stream is not None:
+                cam_stream.close()
             rc = enc.wait()
     if rc != 0:
         raise RuntimeError("encoder failed: " + open(enc_log).read()[-500:])
@@ -548,18 +580,35 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
     log(f"audio: input {ln['input_i']:.1f} LUFS, tp {ln['input_tp']:.1f} dBFS -> target {config.TARGET_LUFS:g}")
     timings["loudnorm_sec"] = round(time.monotonic() - t, 1)
 
+    cam_stream, cam_prep, probe = None, None, None
+    if use_cam:                         # B3: the cam block comes from the benchmark's chain (never plain lanczos)
+        t = time.monotonic()
+        b3 = load_b3(out_dir)
+        try:
+            up = cam_sr.make(b3["method"]).load()
+        except cam_sr.ModelError as e:
+            raise ValueError(f"cam enhance: {b3['method']} is unavailable ({e}): refusing the clip, plain lanczos is not shipped")
+        cam_stream, cam_prep = cam_enhance.prepare(media, s_f, dur, fps, fps_arg(fps), cbx, layout.region_px(rect, src_w, src_h),
+                                                   (src_w, src_h), b3, up, log)
+        probe = cam_enhance.new_probe(n)
+        timings["cam_prep_sec"] = round(time.monotonic() - t, 1)
     t = time.monotonic()
     out_path = os.path.join(out_dir, "clip.mp4")
     short = render_frames(media, s_f, n, fps, bxs, src_w, src_h,
                           encode_cmd(media, s_f, dur, ass_path, out_path, fps, af, preset=preset),
                           os.path.join(out_dir, "encode.log"), cbx,
-                          layout.region_px(rect, src_w, src_h) if use_cam else None)
+                          layout.region_px(rect, src_w, src_h) if use_cam else None, cam_stream, probe)
     timings["render_sec"] = round(time.monotonic() - t, 1)
     audio_final = final_true_peak(media, s_f, dur, out_path, ln, log)
     if not audio_final["ok"]:
         raise ValueError(f"true peak {audio_final['tp']} dBFS is above {config.TRUE_PEAK:g} after "
                          f"{len(audio_final['passes'])} measurements: refusing the clip")
 
+    cam_quality = cam_enhance.quality_report(cam_stream, cam_prep, probe) if cam_stream is not None else None
+    if cam_quality:
+        timings["cam_sr_sec"] = cam_quality["sr_seconds"]
+        log(f"cam quality: fidelity {cam_quality['fidelity']} blockiness {cam_quality['blockiness']} edge {cam_quality['edge']} "
+            f"(plain lanczos {cam_quality['lanczos']}) gate {'PASS' if cam_quality['gate']['ok'] else 'FAIL'}")
     r = {"source": {"width": src_w, "height": src_h, "fps": fps, "duration": pr["duration"]},
          "asked": {"start": start, "end": end}, "cut": {"start": s_f, "end": round(s_f + dur, 3), "duration": round(dur, 4), "frames": n},
          "expected": {"frames": n, "duration": round(dur, 4), "source_fps": fps}, "short_frames": short,
@@ -567,10 +616,10 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
          "word_spans": [[round(w["s"], 3), round(w["e"], 3)] for w in cw],
          "cam_diag": diag, "crop_points": pts,
          "cam_scale": {"upscale": cam_info.get("upscale"), "box_px": cam_info.get("box_px"),
-                       "chain": "bilateral denoise, lanczos4 upscale, light unsharp"}, "loudnorm_input": ln, "audio_final": audio_final, "timings": timings,
+                       "chain": cam_quality["chain"] if cam_quality else "none (no cam block)"}, "cam_quality": cam_quality, "loudnorm_input": ln, "audio_final": audio_final, "timings": timings,
          "encode": {"codec": "libx264", "crf": config.CRF, "preset": preset},
          "grade_inputs": {"cam_diag": diag, "audio_inputs": 1, "audio_filters": list(AUDIO_FILTERS), "trim": trim_info,
-                          "hook": {"text": hook, "source": hook_src, "match": hook_match}, **stats}}
+                          "hook": {"text": hook, "source": hook_src, "match": hook_match}, "cam_quality": cam_quality, **stats}}
     with open(os.path.join(out_dir, "render.json"), "w") as f:
         json.dump(r, f, indent=1)
     with open(os.path.join(out_dir, "layout.json"), "w") as f:

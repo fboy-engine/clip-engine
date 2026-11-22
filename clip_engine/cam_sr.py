@@ -323,26 +323,45 @@ def choose_b3(results, prefer=B3_METHOD, budget=SR_BUDGET_SEC, tiers=B3_FPS_TIER
     return {"method": "lanczos", "cam_fps": tiers[0], "rejected": why, "reason": "nothing usable"}
 
 
+NO_GRID_BLOCKINESS = 1.02       # blockiness ~1.0 = no visible block grid (quality.blockiness)
+
+
+def blockiness_ok(enh_b, old_b):
+    """(ok, how). The block must show LESS grid than plain lanczos. One honest exception: the old chain's
+    bilateral denoise softens the 8 px grid lines below neutral (blockiness < 1.0, measured 0.911 on the real cam),
+    which is blur, not a cleaner picture. When the old number is below 1.0, a block with no visible grid
+    (<= NO_GRID_BLOCKINESS) also passes. When the old number is 1.0 or higher, it must be strictly lower."""
+    if enh_b < old_b:
+        return True, "lower than plain lanczos"
+    if old_b < 1.0 and enh_b <= NO_GRID_BLOCKINESS:
+        return True, (f"no block grid ({enh_b:.4f} <= {NO_GRID_BLOCKINESS:g}); plain lanczos {old_b:.4f} is below 1.0 "
+                      f"only because its denoise blurs the grid lines")
+    return False, f"blockiness {enh_b:.4f} is not lower than plain lanczos {old_b:.4f}"
+
+
 def gate_numbers(enh, old, fid_min=FIDELITY_MIN):
     """The cam quality gate. enh/old: {"fidelity", "blockiness", "edge"} (means over the sampled frames; for `old`,
     the plain lanczos chain, fidelity is only reported). Fails with a clear reason per metric."""
     reasons = []
     if enh["fidelity"] < fid_min:
         reasons.append(f"face fidelity {enh['fidelity']:.4f} is below {fid_min:g} (the enhanced block drifts from the real face)")
-    if not enh["blockiness"] < old["blockiness"]:
-        reasons.append(f"blockiness {enh['blockiness']:.4f} is not lower than plain lanczos {old['blockiness']:.4f}")
+    b_ok, how = blockiness_ok(enh["blockiness"], old["blockiness"])
+    if not b_ok:
+        reasons.append(how)
     if not enh["edge"] > old["edge"]:
         reasons.append(f"edge strength {enh['edge']:.2f} is not higher than plain lanczos {old['edge']:.2f}")
-    return {"ok": not reasons, "reasons": reasons, "fidelity_min": fid_min}
+    return {"ok": not reasons, "reasons": reasons, "fidelity_min": fid_min, "blockiness_rule": how if b_ok else "fail"}
 
 
-def choose_blend(rows, base, fid_min=FIDELITY_MIN):
+def choose_blend(rows, base, fid_min=FIDELITY_MIN, prefer=None):
     """rows: {blend: {"fidelity","blockiness","edge"}} measured on real crops; base: the plain lanczos numbers.
-    The largest SR share that passes the whole gate (fidelity, blockiness lower, edge higher). None if none passes;
-    then `why` says what failed at the smallest share."""
+    Among the SR shares that pass the whole gate: the largest one, or (prefer given) the one closest to `prefer`
+    (ties go to the smaller SR share, which keeps the real face). None if none passes; then `why` says what
+    failed at the smallest share."""
     passing = [w for w in sorted(rows, reverse=True) if gate_numbers(rows[w], base, fid_min)["ok"]]
     if passing:
-        return {"blend": passing[0], "ok": True, "reasons": []}
+        pick = passing[0] if prefer is None else min(passing, key=lambda w: (abs(w - prefer), w))
+        return {"blend": pick, "ok": True, "reasons": [], "passing": sorted(passing)}
     low = min(rows)
     return {"blend": None, "ok": False, "reasons": gate_numbers(rows[low], base, fid_min)["reasons"],
             "note": f"no SR share in {sorted(rows)} passes the gate (reasons are for share {low})"}

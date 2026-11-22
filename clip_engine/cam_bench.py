@@ -224,14 +224,16 @@ def run(media, start, end, out_dir, vod_id="", url="", log=print, cache_dir=None
     if b3sel["method"] == "lanczos":
         pick = {"blend": None, "ok": False, "reasons": ["no neural upscaler is available inside the time budget (plain lanczos is not shipped)"]}
     else:
-        pick = cam_sr.choose_blend(rows_w, base)
+        pick = cam_sr.choose_blend(rows_w, base, prefer=cam_sr.BLEND_START)
     log(f"B3 blend: {pick} | plain lanczos {base} | rows {json.dumps({str(k): v for k, v in rows_w.items()})}")
     b3 = {"method": b3sel["method"], "cam_fps": b3sel["cam_fps"], "reason": b3sel["reason"], "rejected": b3sel["rejected"],
           "deblock": chosen, "deblock_vf": deb_vf, "denoise_vf": cam_sr.DENOISE_VF, "blend": pick["blend"],
           "blend_start": cam_sr.BLEND_START, "ok": bool(pick["ok"]), "reasons": pick["reasons"],
           "sec_per_frame_bench_roi": results.get(b3sel["method"], {}).get("sec_per_frame"),
           "old_lanczos": base, "blend_rows": {str(k): v for k, v in rows_w.items()}, "frames_measured": len(per_old),
-          "fidelity_min": cam_sr.FIDELITY_MIN, "sr_factor": cam_sr.SR_FACTOR}
+          "fidelity_min": cam_sr.FIDELITY_MIN, "sr_factor": cam_sr.SR_FACTOR,
+          "passing_shares": pick.get("passing", []),
+          "gate": cam_sr.gate_numbers(rows_w[pick["blend"]], base) if pick["blend"] is not None else None}
 
     # cam_compare.png: OLD chain (lanczos) over NEW chain on the SAME frame, real 1080x540 size, two moments
     show_w = pick["blend"] if pick["blend"] else cam_sr.BLEND_START

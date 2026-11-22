@@ -13,6 +13,14 @@ Kai block at the top (1080x540 from the 360x180 cam crop), nothing leaks into th
 ## RUN INPUTS (verification runs, workflow clip.yml, ref main, account github_corral-fowler)
 url https://www.youtube.com/watch?v=LHoHInbPkk0, start_sec 1200, end_sec 1500, render_start 45, render_end 85, cache_only true, render true, dry_run true, warp false, cookies false, hook_text and cam_rect empty. Source cache key src-3cb28dbf11cce196-v1. Stage A verification run on b42d7dea was started by the user (they read the result).
 
+## STAGE B STATE
+- B1 done (42bd96d): clip_engine/quality.py (psnr, ssim, blockiness, edge_strength, mean_gradient).
+- B2 (this commit): cam_sr.py (4 upscalers: lanczos, OpenCV dnn_superres FSRCNN_x3 / EDSR_x3, Real-ESRGAN general-x4v3 ONNX -> area 3x; model files SHA-256 pinned; time/frame measured first; choose() = best SSIM that fits SR_BUDGET_SEC=720 at cam 30 or 24 fps AND does not lose to lanczos on PSNR/SSIM/blockiness), cam_bench.py + `cli cam-bench` (REAL crops from the cached source via seeded_cam + face path; deblock variants scored on the same crops; cam_bench.json/.md + cam_compare.png), srcinfo.py (source format/bitrate, metadata-only format listing, better_formats), workflow: input cam_bench, opencv-contrib-python-headless>=4.9,<5 + onnxruntime, SR model cache, bench step, artifact cambench-<run>.
+- Finding: the static ffmpeg build (BtbN) has NO `pp` filter (libpostproc dropped), so deblock candidates are deblock weak/strong, spp, pp7 (chosen by measured blockiness drop with SSIM >= 0.93). Tested end to end locally on a synthetic 1080p source only (not representative): real numbers come from the Actions bench run.
+- Sandbox limits: ~400 MB free RAM: EDSR (38 MB .pb) gets OOM-killed here, so EDSR is only exercised in Actions.
+- B3 TODO: render uses cam_bench.json chain (ffmpeg prepass fps=cam_fps, full-frame deblock, crop region, hqdn3d -> SR on ROI -> sub-pixel crop -> unsharp + grain), cam_quality in render.json, grader gate enhanced > plain lanczos, source format/bitrate in run summary.
+- B4 TODO: gameplay panel.
+
 ## NEXT (user order)
 A2 done (see DONE). Stage A verification run started by the user on b42d7dea.
 B (IN PROGRESS, units: B1 quality.py metrics, B2 cam_sr.py + cam_bench step + cam_compare.png, B3 render chain + grader gate + source format/bitrate, B4 gameplay panel). Kai block quality (TOP priority, size fixed 1080x540 from 360x180): deblock (pp/deblock) -> hqdn3d low -> real upscaler chosen by measurement (lanczos baseline, OpenCV dnn_superres FSRCNN/EDSR, Real-ESRGAN-general ONNX CPU; PSNR/SSIM + blockiness; time/frame benchmark first; 35 min step limit; 30 fps cam with frame duplication allowed) -> gentle unsharp + very light grain. No face restoration. Gate enhanced > plain lanczos; cam_compare.png in artifact; log source format/bitrate in the run summary; do NOT re-download.

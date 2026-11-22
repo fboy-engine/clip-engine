@@ -78,6 +78,10 @@ on:
         description: Fail instead of downloading if the source cache misses
         type: boolean
         default: false
+      cam_bench:
+        description: Cam upscaler benchmark on the real cam crops (render_start/render_end = the window); implied by render
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -254,16 +258,42 @@ jobs:
           FIND_MODEL: ${{ inputs.find_model }}
           FIND_TOP: ${{ inputs.find_top }}
         run: python -m clip_engine.cli find out/source.mp4 --offset "$START" --model "$FIND_MODEL" --top "$FIND_TOP" --out out
-      - name: Install opencv 4.x (render only; OpenCV 5 removed CascadeClassifier)
-        if: ${{ inputs.render }}
-        timeout-minutes: 5
+      - name: Install opencv 4.x contrib + onnxruntime (render / cam bench; OpenCV 5 removed CascadeClassifier)
+        if: ${{ inputs.render || inputs.cam_bench }}
+        timeout-minutes: 6
         run: |
-          timeout 240 pip install -q --default-timeout 30 --retries 2 "opencv-python-headless>=4.9,<5"
-          python -c "import cv2; print('opencv', cv2.__version__)"
+          timeout 300 pip install -q --default-timeout 30 --retries 2 "opencv-contrib-python-headless>=4.9,<5" "onnxruntime>=1.17"
+          python -c "import cv2, onnxruntime; print('opencv', cv2.__version__, '| dnn_superres', hasattr(cv2, 'dnn_superres'), '| onnxruntime', onnxruntime.__version__)"
       - name: Feature check (fail fast before the render starts)
-        if: ${{ inputs.render }}
+        if: ${{ inputs.render || inputs.cam_bench }}
         timeout-minutes: 2
         run: python -m clip_engine.cli check-cv
+      - name: Cache super-resolution models (SHA-256 pinned in code)
+        if: ${{ inputs.render || inputs.cam_bench }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/clip-engine/sr
+          key: sr-models-v1
+      - name: Cam upscaler benchmark (real cam crops of the cached source; metadata-only format listing, no media download)
+        if: ${{ inputs.render || inputs.cam_bench }}
+        timeout-minutes: 25
+        env:
+          RSTART: ${{ inputs.render_start }}
+          REND: ${{ inputs.render_end }}
+          SRCURL: ${{ inputs.url }}
+        run: |
+          python -m clip_engine.cli cam-bench out/source.mp4 --start "$RSTART" --end "$REND" --vod-id "$SRCURL" --url "$SRCURL" --formats --out out
+      - name: Upload cam benchmark (json, table, cam_compare.png)
+        if: ${{ always() && inputs.cam_bench && !inputs.render }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cambench-${{ github.run_id }}
+          path: |
+            out/cam_bench.json
+            out/cam_bench.md
+            out/cam_compare.png
+          retention-days: 14
+          if-no-files-found: warn
       - name: Render clip (cam on top, subject-tracked gameplay panel, captions, hook, -14 LUFS) and grade it
         if: ${{ inputs.render }}
         timeout-minutes: 35
@@ -293,6 +323,9 @@ jobs:
             out/clip.ass
             out/render.json
             out/layout.json
+            out/cam_bench.json
+            out/cam_bench.md
+            out/cam_compare.png
             out/grade.json
             out/cam_diag.json
             out/source_contact.jpg

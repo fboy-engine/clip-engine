@@ -159,6 +159,25 @@ def cmd_render(a):
     return _grade_out(a.out)
 
 
+def cmd_cam_bench(a):
+    """Benchmark the cam upscalers on the real cam crops of the cached source (no download of media)."""
+    from . import cam_bench
+    cookies, proxy = _env()
+    try:
+        _, md = cam_bench.run(a.media, a.start, a.end, a.out, vod_id=a.vod_id, url=a.url if a.formats else "",
+                              cache_dir=a.cache_dir or None, cookies=cookies, proxy=proxy,
+                                  candidates=tuple(c for c in a.candidates.split(",") if c))
+    except Exception as e:
+        print(f"FAIL cam-bench: {type(e).__name__}: {str(e)[:600]}")
+        return 1
+    print(md)
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a") as f:
+            f.write(md)
+    return 0
+
+
 def cmd_grade(a):
     try:
         return _grade_out(a.out)
@@ -214,6 +233,18 @@ def main(argv=None):
     r.add_argument("--cache-dir", dest="cache_dir", default=transcribe_default_cache())
     r.add_argument("--out", default="out")
     r.set_defaults(fn=cmd_render)
+    cb = sub.add_parser("cam-bench")
+    cb.add_argument("media")
+    cb.add_argument("--start", type=float, required=True, help="window start, seconds in the media file")
+    cb.add_argument("--end", type=float, required=True)
+    cb.add_argument("--vod-id", dest="vod_id", default="")
+    cb.add_argument("--url", default="", help="stream URL: only used to LIST formats (metadata), never to download")
+    cb.add_argument("--formats", action="store_true", help="also list the platform's formats (metadata only)")
+    cb.add_argument("--cache-dir", dest="cache_dir", default="")
+    cb.add_argument("--candidates", default=",".join(__import__("clip_engine.cam_sr", fromlist=["x"]).CANDIDATES),
+                    help="comma list: lanczos,fsrcnn,edsr,realesrgan")
+    cb.add_argument("--out", default="out")
+    cb.set_defaults(fn=cmd_cam_bench)
     g = sub.add_parser("grade")
     g.add_argument("--out", default="out")
     g.set_defaults(fn=cmd_grade)

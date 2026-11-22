@@ -51,3 +51,6 @@ After each stage: commit sha to the user, ask for a cache_only=true verification
 
 ## RUN STATE
 - Last user-reviewed run: 44924213343 on 8a5e730. Bench run 45024407051 on 08a6047 (see Stage B state). Composio workbench has numpy but no cv2/ffmpeg: real video paths are only exercised in Actions.
+
+## PART A (editing fixes, this Claude)
+- A1a+A1b: captions_verify.py (15c? tests, commit 15e04e9) = verify each large-v3 word against Gemini audio text and OCR of game subtitles (OCR preferred for lines that match the speech), insert words missed by VAD into speech gaps, coverage>=90% of speech seconds + zero unresolved gate, data for out/captions_check.json. hooks.phrase_hook (whole sentence/clause <=6 words, never a piece or copy of caption 1; hook no longer removes words from captions) wired in render_clip.build_ass. NOT YET WIRED into render(): Gemini audio call, OCR, rescue ASR pass, captions_check.json, grader checks (A1c).

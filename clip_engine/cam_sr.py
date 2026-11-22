@@ -33,6 +33,13 @@ DEBLOCK_MIN_SSIM = 0.93         # a deblock variant must keep this SSIM against 
 DEBLOCK_MIN_GAIN = 0.05         # and cut blockiness by at least 5 % to be used at all
 UNSHARP_AMOUNT, UNSHARP_SIGMA = 0.25, 1.0                 # gentle
 GRAIN_SIGMA = 1.1               # very light luma grain, 8-bit levels
+# ---- B3 (user decision): Real-ESRGAN on the cam ROI at a LOW cam fps, in-between frames filled by motion compensation
+B3_METHOD = "realesrgan"
+B3_FPS_TIERS = (20, 15, 12, 10, 8)    # highest that fits the budget; lowered automatically for long clips / slow runners
+BLEND_STEPS = (1.0, 0.85, 0.7, 0.55, 0.4, 0.25)   # SR share of the final picture (the rest is the lanczos upscale)
+BLEND_START = 0.7
+FIDELITY_MIN = 0.96             # shrunk-back block vs the untouched real crop (the face must stay the real face)
+SR_FACTOR = 4                   # every upscaler hands over a 4x picture; the sub-pixel crop resamples it to the exact block
 
 HF = "https://huggingface.co/momoapps/optimix-models/resolve/main/realesr-general-x4v3.onnx"
 MODELS = {
@@ -98,6 +105,10 @@ class Lanczos:
         import cv2
         return cv2.resize(img, None, fx=SCALE, fy=SCALE, interpolation=cv2.INTER_LANCZOS4)
 
+    def run4(self, img):
+        import cv2
+        return cv2.resize(img, None, fx=SR_FACTOR, fy=SR_FACTOR, interpolation=cv2.INTER_LANCZOS4)
+
 
 class DnnSR:
     def __init__(self, name):
@@ -117,6 +128,11 @@ class DnnSR:
     def run(self, img):
         return self.sr.upsample(img)
 
+    def run4(self, img):                  # x3 model: one extra lanczos step to the common 4x
+        import cv2
+        out = self.sr.upsample(img)
+        return cv2.resize(out, (img.shape[1] * SR_FACTOR, img.shape[0] * SR_FACTOR), interpolation=cv2.INTER_LANCZOS4)
+
 
 class OnnxSR:
     name = "realesrgan"
@@ -133,13 +149,17 @@ class OnnxSR:
         self.inp = self.sess.get_inputs()[0].name
         return self
 
-    def run(self, img):
-        import cv2
+    def run4(self, img):
+        """The raw model output: exactly 4x, BGR uint8."""
         rgb = np.ascontiguousarray(img[..., ::-1]).astype(np.float32) / 255.0
         y = self.sess.run(None, {self.inp: rgb.transpose(2, 0, 1)[None]})[0][0]
-        out = (np.clip(y, 0, 1).transpose(1, 2, 0) * 255.0 + 0.5).astype(np.uint8)[..., ::-1]
+        return np.ascontiguousarray((np.clip(y, 0, 1).transpose(1, 2, 0) * 255.0 + 0.5).astype(np.uint8)[..., ::-1])
+
+    def run(self, img):
+        import cv2
+        out = self.run4(img)
         h, w = img.shape[:2]
-        return cv2.resize(np.ascontiguousarray(out), (w * SCALE, h * SCALE), interpolation=cv2.INTER_AREA)   # 4x -> 3x
+        return cv2.resize(out, (w * SCALE, h * SCALE), interpolation=cv2.INTER_AREA)   # 4x -> 3x
 
 
 def make(name):
@@ -272,3 +292,80 @@ def chain_description(deblock, upscaler, cam_fps):
     return {"deblock": deblock, "deblock_vf": DEBLOCK_VARIANTS.get(deblock, ""), "denoise_vf": DENOISE_VF,
             "upscaler": upscaler, "cam_fps": cam_fps, "sharpen": {"amount": UNSHARP_AMOUNT, "sigma": UNSHARP_SIGMA},
             "grain_sigma": GRAIN_SIGMA}
+
+
+# ---- B3 choices, by measurement -----------------------------------------------------------------------------
+
+def choose_b3(results, prefer=B3_METHOD, budget=SR_BUDGET_SEC, tiers=B3_FPS_TIERS):
+    """The upscaler for the cam block: the user's pick (Real-ESRGAN) if it ran and fits the budget at some cam fps
+    in `tiers`; else the next best that fits (edsr, fsrcnn); lanczos last (the render refuses to ship it).
+    results: {name: bench row with sec_per_frame or error}."""
+    order = [prefer] + [n for n in ("edsr", "fsrcnn") if n != prefer] + ["lanczos"]
+    why = {}
+    for name in order:
+        r = results.get(name)
+        if r is None:
+            why[name] = "not benchmarked"
+            continue
+        if r.get("error"):
+            why[name] = "unavailable: " + r["error"]
+            continue
+        if name == "lanczos":
+            return {"method": "lanczos", "cam_fps": tiers[1] if len(tiers) > 1 else tiers[0], "rejected": why,
+                    "reason": "no neural upscaler is available inside the time budget: plain lanczos would be shipped"}
+        fps = fit_fps(r["sec_per_frame"], budget, tiers)
+        if fps is None:
+            why[name] = (f"too slow: {r['sec_per_frame']:.2f} s/frame x {frames_needed(tiers[-1])} frames x {SAFETY} "
+                         f"> {budget:g} s budget even at {tiers[-1]} fps")
+            continue
+        return {"method": name, "cam_fps": fps, "rejected": why, "sec_per_frame": r["sec_per_frame"],
+                "reason": (f"{name} fits {budget:g} s at {fps} fps" + ("" if name == prefer else f" (next best: {prefer} did not fit)"))}
+    return {"method": "lanczos", "cam_fps": tiers[0], "rejected": why, "reason": "nothing usable"}
+
+
+def gate_numbers(enh, old, fid_min=FIDELITY_MIN):
+    """The cam quality gate. enh/old: {"fidelity", "blockiness", "edge"} (means over the sampled frames; for `old`,
+    the plain lanczos chain, fidelity is only reported). Fails with a clear reason per metric."""
+    reasons = []
+    if enh["fidelity"] < fid_min:
+        reasons.append(f"face fidelity {enh['fidelity']:.4f} is below {fid_min:g} (the enhanced block drifts from the real face)")
+    if not enh["blockiness"] < old["blockiness"]:
+        reasons.append(f"blockiness {enh['blockiness']:.4f} is not lower than plain lanczos {old['blockiness']:.4f}")
+    if not enh["edge"] > old["edge"]:
+        reasons.append(f"edge strength {enh['edge']:.2f} is not higher than plain lanczos {old['edge']:.2f}")
+    return {"ok": not reasons, "reasons": reasons, "fidelity_min": fid_min}
+
+
+def choose_blend(rows, base, fid_min=FIDELITY_MIN):
+    """rows: {blend: {"fidelity","blockiness","edge"}} measured on real crops; base: the plain lanczos numbers.
+    The largest SR share that passes the whole gate (fidelity, blockiness lower, edge higher). None if none passes;
+    then `why` says what failed at the smallest share."""
+    passing = [w for w in sorted(rows, reverse=True) if gate_numbers(rows[w], base, fid_min)["ok"]]
+    if passing:
+        return {"blend": passing[0], "ok": True, "reasons": []}
+    low = min(rows)
+    return {"blend": None, "ok": False, "reasons": gate_numbers(rows[low], base, fid_min)["reasons"],
+            "note": f"no SR share in {sorted(rows)} passes the gate (reasons are for share {low})"}
+
+
+def ghost_verdict(key_fid, inter_fid, mean_tol=0.03, min_tol=0.08):
+    """key_fid / inter_fid: fidelity of the keyframe outputs / of the in-between outputs against the real frames of
+    the same instant. Double edges (ghosting) show as in-between frames that match the real frame worse than the
+    keyframes do. Returns (ok, detail)."""
+    if not key_fid or not inter_fid:
+        return False, "no frames to compare"
+    k, m, lo = float(np.mean(key_fid)), float(np.mean(inter_fid)), float(np.min(inter_fid))
+    ok = m >= k - mean_tol and lo >= k - min_tol
+    return ok, (f"keyframe fidelity {k:.4f}, in-between mean {m:.4f} (min {lo:.4f}); allowed drop {mean_tol:g} mean, "
+                f"{min_tol:g} worst")
+
+
+def plan_cam_fps(sec_per_frame, dur, cap_fps, budget=SR_BUDGET_SEC, tiers=B3_FPS_TIERS):
+    """Highest SR rate <= cap_fps whose total time for THIS clip (with the safety factor) fits; None if even the
+    lowest tier does not. The ROI is measured at render time, so this is the render's own check."""
+    for fps in tiers:
+        if fps > cap_fps:
+            continue
+        if sec_per_frame * SAFETY * (int(np.ceil(dur * fps)) + 2) <= budget:
+            return fps
+    return None

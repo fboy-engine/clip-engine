@@ -35,5 +35,10 @@ After each stage: commit sha to the user, ask for a cache_only=true verification
 - Commit 717ad3c and af9a12f leaked a personal email; history NOT rewritten (needs the user's OK).
 - Overlay gate checks planned geometry, not rendered pixels.
 
+## STEP 0 (done)
+- Bench run 44998778975 failed with 0 samples because render_start/render_end were both 0. Fix: clip_engine/window.py check_window() (0/0, equal, reversed, <4 s, start past media = clear ValueError naming render_start/render_end); used by cam-bench (before and inside cam_bench.run) and render; cam-bench always writes out/cam_bench.json + .md with the error before exiting 1. Tests: tests/test_window.py.
+- Correct bench run 45023100430 (artifact cambench-45023100430): lanczos won on time budget (fsrcnn not better, edsr 19.2 s/frame, realesrgan 0.59 s/frame too slow at cam 30 fps); deblock none chosen; source h264 1920x1080 60 fps ~5433 kbps; format listing needs cookies (report only).
+- USER DECISION (B3 go): Real-ESRGAN general-x4v3 on the cam region at cam_fps 15 (try 20), in-between frames by motion-compensated blend / optical-flow warp with a no-double-edge check (fallback 20 fps or nearest SR frame + lanczos detail), SR/lanczos blend ~70/30 chosen by measurement, gate face fidelity >= 0.96, blockiness < lanczos, edge > lanczos, auto-lower SR fps for long clips, sr_seconds in render.json, cam_compare.png old vs new at 1080x540, deblock chosen per source by measurement, review 3 frames (face, mid-motion, purple tint).
+
 ## RUN STATE
 - Last run: 44924213343 on 8a5e730 (user reviewed; items above). No run started this session yet.

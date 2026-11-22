@@ -134,8 +134,10 @@ def _grade_out(out):
 
 def cmd_render(a):
     from . import render_clip
+    from . import window
     rect = [float(x) for x in a.cam_rect.split(",")] if a.cam_rect else None
     try:
+        window.check_window(a.start, a.end)
         render_clip.render(a.media, a.start, a.end, a.out, a.hook, a.cam_corner, rect,
                            model=a.model, cache_dir=a.cache_dir, payoff=a.payoff, vod_id=a.vod_id)
     except Exception as e:  # report the real failure, never fake a pass
@@ -161,14 +163,22 @@ def cmd_render(a):
 
 def cmd_cam_bench(a):
     """Benchmark the cam upscalers on the real cam crops of the cached source (no download of media)."""
-    from . import cam_bench
+    from . import cam_bench, window
     cookies, proxy = _env()
+    inputs = {"start": a.start, "end": a.end, "vod_id": a.vod_id}
     try:
+        window.check_window(a.start, a.end)
         _, md = cam_bench.run(a.media, a.start, a.end, a.out, vod_id=a.vod_id, url=a.url if a.formats else "",
                               cache_dir=a.cache_dir or None, cookies=cookies, proxy=proxy,
                                   candidates=tuple(c for c in a.candidates.split(",") if c))
     except Exception as e:
-        print(f"FAIL cam-bench: {type(e).__name__}: {str(e)[:600]}")
+        msg = f"FAIL cam-bench: {type(e).__name__}: {str(e)[:600]}"
+        print(msg)
+        window.write_error_report(a.out, msg, inputs)      # the artifact upload always has something
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary:
+            with open(summary, "a") as f:
+                f.write("### Cam benchmark FAILED\n```\n" + msg + "\n```\n")
         return 1
     print(md)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")

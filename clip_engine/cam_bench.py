@@ -11,7 +11,7 @@ import subprocess
 
 import numpy as np
 
-from . import cam_sr, download, exclusion, layout, quality, srcinfo
+from . import cam_sr, download, exclusion, layout, quality, srcinfo, window
 
 SWS = "lanczos+accurate_rnd+full_chroma_int"
 N_FRAMES = 8
@@ -108,7 +108,8 @@ def run(media, start, end, out_dir, vod_id="", url="", log=print, cache_dir=None
     rect = exclusion.cam_seed_frac(zones, src_w, src_h)
     if not rect:
         raise ValueError("cam bench needs the cam zone of a known VOD (--vod-id)")
-    dur = min(end, pr["duration"] - 0.05) - start
+    start, end = window.check_window(start, end, pr["duration"])      # empty/zero window: clear error, never 0 samples
+    dur = end - start
     cam = render_clip.seeded_cam(media, start, dur, rect, src_w, src_h, log)
     if cam is None:
         raise ValueError("no facecam verified in the cam zone: no real crops to benchmark")

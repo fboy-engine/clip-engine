@@ -130,3 +130,82 @@ def hook_start(ass):
 def within_budget(start_str):
     h, m, s = start_str.split(":")
     return int(h) * 3600 + int(m) * 60 + float(s) <= HOOK_MAX_SEC
+
+
+# ---- phrase hook (A1): one complete phrase, never a piece of caption 1, never a copy of it -------------------------
+SPOKEN_WITHIN = 40.0     # the hook phrase must really be said somewhere in the clip
+
+
+def sentences(words, max_pause=MAX_PAUSE):
+    """Split word dicts into sentences: end punctuation (. ? !) or a long pause ends one."""
+    out, cur = [], []
+    for w in words:
+        if cur and w["s"] - cur[-1]["e"] > max_pause:
+            out.append(cur)
+            cur = []
+        cur.append(w)
+        if w["w"].rstrip().endswith((".", "?", "!")):
+            out.append(cur)
+            cur = []
+    if cur:
+        out.append(cur)
+    return out
+
+
+def clauses(sentence):
+    """The whole sentence plus its comma-separated clauses (each a candidate), as lists of word dicts."""
+    outs, cur = [list(sentence)], []
+    for w in sentence:
+        cur.append(w)
+        if w["w"].rstrip().endswith(","):
+            outs.append(cur)
+            cur = []
+    if cur and len(cur) < len(sentence):
+        outs.append(cur)
+    return outs
+
+
+def first_line_text(words):
+    g = captions.group_words(words)
+    return " ".join(x["w"] for x in g[0]) if g else ""
+
+
+def _score(cand, start):
+    txt = " ".join(w["w"] for w in cand)
+    n = len(cand)
+    sc = (2.0 if txt.rstrip().endswith(("?", "!")) else 0.0) + (1.0 if 4 <= n <= 6 else 0.0)
+    sc += 0.5 if captions.pick_highlight([w["w"] for w in cand]) else 0.0
+    return sc - 0.05 * start
+
+
+def phrase_hook(given, words, max_start=20.0):
+    """-> (text, source, matched). ONE complete phrase of 2-6 words that
+    - is a whole sentence or comma clause (starts and ends on a boundary, never a cut piece),
+    - does not repeat or split the first caption line,
+    - is really spoken in the clip (matched=True), or is Gemini's own line flagged given_unverified.
+    The captions keep every word; the hook never takes words away from them."""
+    first = first_line_text(words)
+    cand = clean_hook(given)
+    if cand and is_complete(cand) and not duplicates(cand, first):
+        if overlap(cand, words, within=SPOKEN_WITHIN) >= 0.6:
+            return cand, "given", True
+    best, best_sc = None, None
+    for sent in sentences(words):
+        if sent[0]["s"] > max_start:
+            break
+        for c in clauses(sent):
+            c = [w for w in c if (w["e"] - w["s"]) >= MIN_WORD_S]
+            txt = clean_hook(" ".join(w["w"] for w in c))
+            if not txt or not is_complete(txt) or duplicates(txt, first):
+                continue
+            # a clause that starts mid-thought (after a conjunction) is a fragment
+            if _tok(txt)[0] in {"and", "but", "so", "or", "because", "then", "which", "that"} and len(c) < len(sent):
+                continue
+            sc = _score(c, c[0]["s"])
+            if best_sc is None or sc > best_sc:
+                best, best_sc = txt, sc
+    if best:
+        return best, "speech_phrase", True
+    if cand and is_complete(cand) and not duplicates(cand, first):
+        return cand, "given_unverified", False
+    return "", "none", False

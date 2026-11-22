@@ -10,7 +10,7 @@ from .config import (CRF, MIN_LEN, MAX_LEN, OUT_W, OUT_H, PUNCH_TARGET, PUNCH_HA
 PASS, FAIL, WARN, NA = "pass", "fail", "warn", "n/a"
 ALLOWED_AUDIO_FILTERS = ("afade", "acompressor", "loudnorm", "alimiter")
 LUFS_TOL, LUFS_WARN = 1.0, 2.0
-TP_FAIL = -1.0
+TP_FAIL = TRUE_PEAK          # the finished file must stay at or below the true-peak target (-1.5 dBFS)
 MAX_PAN_PX_S = 700.0         # source px per second; faster reads as a whip pan
 
 
@@ -81,8 +81,6 @@ def check_loudness(m):
     detail = f"{i:.1f} LUFS (target {TARGET_LUFS:g}), LRA {L.get('lra')}, true peak {tp} dBFS"
     if tp is not None and tp > TP_FAIL:
         st, detail = FAIL, detail + f"; true peak above {TP_FAIL} dBFS"
-    elif tp is not None and tp > TRUE_PEAK + 0.3 and st == PASS:
-        st, detail = WARN, detail + f"; true peak above target {TRUE_PEAK}"
     return _c("loudness -14 LUFS", st, detail)
 
 

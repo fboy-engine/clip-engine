@@ -118,9 +118,15 @@ def path_stats(bxs, fps, src_w, src_h, src_h0):
 # ---- audio ---------------------------------------------------------------
 
 # gentle level matching so gunfire does not bury speech (2.2:1 above -21 dB, slow release: no pumping),
-# and a ceiling limiter after loudnorm (0.84 linear = -1.5 dBFS)
+# and a ceiling limiter after loudnorm (config.LIMITER_CEIL_DB; the AAC encode overshoots a few tenths of a dB)
 COMP = "acompressor=threshold=-21dB:ratio=2.2:attack=20:release=350:knee=6dB"
-LIMITER = "alimiter=limit=0.84:attack=5:release=60:level=disabled"
+
+
+def limiter(ceil_db):
+    return f"alimiter=limit={10 ** (ceil_db / 20):.3f}:attack=5:release=60:level=disabled"
+
+
+LIMITER = limiter(config.LIMITER_CEIL_DB)
 AUDIO_FILTERS = ["afade", "acompressor", "loudnorm", "alimiter"]
 
 
@@ -142,10 +148,46 @@ def parse_loudnorm(text):
     return {k: float(d[k]) for k in ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")}
 
 
-def loudnorm_filter(dur, m, fade_out=FADE):
+def loudnorm_filter(dur, m, fade_out=FADE, ceil_db=None):
+    lim = LIMITER if ceil_db is None else limiter(ceil_db)
     return (f"{audio_pre(dur, fade_out)},loudnorm=I={config.TARGET_LUFS:g}:TP={config.TRUE_PEAK:g}:LRA={config.LRA:g}"
             f":measured_I={m['input_i']}:measured_TP={m['input_tp']}:measured_LRA={m['input_lra']}"
-            f":measured_thresh={m['input_thresh']}:offset={m['target_offset']}:linear=true,{LIMITER}")
+            f":measured_thresh={m['input_thresh']}:offset={m['target_offset']}:linear=true,{lim}")
+
+
+def remux_audio_cmd(media, start, dur, video_in, af, out_path):
+    """Keep the encoded video as is (-c:v copy), redo only the audio from the source with filter chain af."""
+    return ["ffmpeg", "-hide_banner", "-nostdin", "-y", "-i", video_in,
+            "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", media,
+            "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-af", af,
+            "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+            "-t", f"{dur:.3f}", "-movflags", "+faststart", out_path]
+
+
+def final_true_peak(media, start, dur, out_path, ln, log=print, measure=None, run=subprocess.run):
+    """Final check on the FINISHED clip: ebur128 true peak must be <= config.TRUE_PEAK. If not, redo the audio
+    only with the limiter ceiling 1 dB lower (up to config.TP_PASSES times). Returns a report dict."""
+    if measure is None:
+        from . import grade_clip
+        measure = grade_clip.loudness
+    ceil, passes = config.LIMITER_CEIL_DB, []
+    for k in range(config.TP_PASSES + 1):
+        L = measure(out_path)
+        tp = L.get("tp")
+        passes.append({"ceil_db": ceil, "tp": tp, "i": L.get("i")})
+        log(f"true peak check: {tp} dBFS (limit {config.TRUE_PEAK:g}), limiter ceiling {ceil:g} dBFS")
+        if tp is not None and tp <= config.TRUE_PEAK:
+            return {"ok": True, "tp": tp, "limit": config.TRUE_PEAK, "ceil_db": ceil, "passes": passes}
+        if k == config.TP_PASSES:
+            break
+        ceil -= 1.0
+        tmp = out_path + ".tp.mp4"
+        p = run(remux_audio_cmd(media, start, dur, out_path, loudnorm_filter(dur, ln, END_FADE, ceil), tmp),
+                capture_output=True, text=True)
+        if p.returncode != 0:
+            raise RuntimeError("audio re-encode for the true-peak check failed: " + (p.stderr or "")[-400:])
+        os.replace(tmp, out_path)
+    return {"ok": False, "tp": passes[-1]["tp"], "limit": config.TRUE_PEAK, "ceil_db": ceil, "passes": passes}
 
 
 # ---- ffmpeg commands -----------------------------------------------------
@@ -504,6 +546,10 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
                           os.path.join(out_dir, "encode.log"), cbx,
                           layout.region_px(rect, src_w, src_h) if use_cam else None)
     timings["render_sec"] = round(time.monotonic() - t, 1)
+    audio_final = final_true_peak(media, s_f, dur, out_path, ln, log)
+    if not audio_final["ok"]:
+        raise ValueError(f"true peak {audio_final['tp']} dBFS is above {config.TRUE_PEAK:g} after "
+                         f"{len(audio_final['passes'])} measurements: refusing the clip")
 
     r = {"source": {"width": src_w, "height": src_h, "fps": fps, "duration": pr["duration"]},
          "asked": {"start": start, "end": end}, "cut": {"start": s_f, "end": round(s_f + dur, 3), "duration": round(dur, 4), "frames": n},
@@ -512,7 +558,7 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
          "word_spans": [[round(w["s"], 3), round(w["e"], 3)] for w in cw],
          "cam_diag": diag, "crop_points": pts,
          "cam_scale": {"upscale": cam_info.get("upscale"), "box_px": cam_info.get("box_px"),
-                       "chain": "bilateral denoise, lanczos4 upscale, light unsharp"}, "loudnorm_input": ln, "timings": timings,
+                       "chain": "bilateral denoise, lanczos4 upscale, light unsharp"}, "loudnorm_input": ln, "audio_final": audio_final, "timings": timings,
          "encode": {"codec": "libx264", "crf": config.CRF, "preset": preset},
          "grade_inputs": {"cam_diag": diag, "audio_inputs": 1, "audio_filters": list(AUDIO_FILTERS), "trim": trim_info,
                           "hook": {"text": hook, "source": hook_src, "match": hook_match}, **stats}}

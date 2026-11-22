@@ -128,3 +128,58 @@ class ColorTags(unittest.TestCase):
         vf = cmd[cmd.index("-vf") + 1]
         for tag in ("color_primaries=bt709", "color_trc=bt709", "colorspace=bt709", "range=tv"):
             self.assertIn(tag, vf)
+
+
+class TruePeak(unittest.TestCase):
+    LN = Commands.LN
+
+    def test_limiter_ceiling_is_minus_3_dbfs(self):
+        self.assertIn("limit=0.708", rc.LIMITER)
+        self.assertIn("limit=0.631", rc.loudnorm_filter(38.0, self.LN, rc.END_FADE, -4.0))
+
+    def test_ok_first_time_no_reencode(self):
+        calls = []
+        r = rc.final_true_peak("m.mp4", 1.0, 30.0, "o.mp4", self.LN, log=lambda s: None,
+                               measure=lambda p: {"tp": -2.1, "i": -14.0}, run=lambda *a, **k: calls.append(a))
+        self.assertTrue(r["ok"])
+        self.assertEqual(calls, [])
+
+    def test_reencodes_audio_until_under_limit(self):
+        tps, cmds = iter([-0.7, -1.2, -1.9]), []
+
+        class P:
+            returncode, stderr = 0, ""
+
+        def run(cmd, **k):
+            cmds.append(cmd)
+            open(cmd[-1], "w").close()
+            return P()
+
+        d = tempfile.mkdtemp()
+        out = os.path.join(d, "o.mp4")
+        open(out, "w").close()
+        r = rc.final_true_peak("m.mp4", 1.0, 30.0, out, self.LN, log=lambda s: None,
+                               measure=lambda p: {"tp": next(tps), "i": -14.0}, run=run)
+        self.assertTrue(r["ok"])
+        self.assertEqual(len(cmds), 2)
+        self.assertEqual(r["ceil_db"], -5.0)
+        self.assertIn("copy", cmds[0])          # video is never re-encoded
+        self.assertTrue(os.path.exists(out))
+        shutil.rmtree(d)
+
+    def test_gives_up_after_passes(self):
+        class P:
+            returncode, stderr = 0, ""
+
+        def run(cmd, **k):
+            open(cmd[-1], "w").close()
+            return P()
+
+        d = tempfile.mkdtemp()
+        out = os.path.join(d, "o.mp4")
+        open(out, "w").close()
+        r = rc.final_true_peak("m.mp4", 1.0, 30.0, out, self.LN, log=lambda s: None,
+                               measure=lambda p: {"tp": -0.5, "i": -14.0}, run=run)
+        self.assertFalse(r["ok"])
+        self.assertEqual(len(r["passes"]), 4)
+        shutil.rmtree(d)

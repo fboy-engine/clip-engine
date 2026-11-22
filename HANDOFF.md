@@ -1,28 +1,27 @@
 # HANDOFF
 
-Session started 2026-11-21 16:13 UTC (commit 3b8d64f). Repo reached through the Composio GitHub connector (fboy-engine only); code is built and tested in the Composio workbench (no cv2 there: libGL missing, so cv2/ffmpeg code paths CANNOT be run here; geometry and logic tests do).
+Repo fboy-engine/clip-engine, ONLY Composio account github_corral-fowler (login fboy-engine), noreply identity, small commits, push after each unit, update this file each time. Code is built and tested in the Composio workbench (no cv2/ffmpeg there: logic tests run, real video paths do not).
+
+## USER-CONFIRMED (run 44924213343, commit 8a5e730): do not change
+Kai block at the top (1080x540 from the 360x180 cam crop), nothing leaks into the gameplay panel, tracking look, the picked moment.
 
 ## DONE
-- Stage 0: git identity + first push, commit 3b8d64f.
-- Stage 1 (already on main, commit 4dd8dfb): Anton + OFL.txt bundled, caption lane on the seam, f*** mask, OCR-reference fix, hook rules, text-over-text gate.
-- Stage 2.1, commit 00a6f1e: clip_engine/exclusion.py (VOD LHoHInbPkk0 zones, safe crop range 397..1730, clamp, cut_stretches, overlay_gate).
-- Stage 2.2, commit 2ba1b47: crop bounds from the zones (render refuses when the crop cannot fit), per-frame overlay gate fails the render, layout.json (cam rect, top block 1080x540, panel 1080x1380, crop rect, panel scale, cam upscale, exclusion results), CLI/workflow --vod-id, layout.json uploaded.
-- Stage 2.3 (this commit, sha in the next update): "wide" detector removed (wide_face, _extra_cascades, all wide counters); cam verified by the strict detector + vision.verify_cam (large face >= 12% of the cam region width, >= 35% of samples, stable); the cam zone of a known VOD seeds the check; search regions now include mid-left, mid-right, top-mid, bottom-mid; no verified cam -> the render RAISES (no gameplay-only / full-frame fallback; only an explicit cam_corner=none on a VOD without zones still allows it); cam enlarge chain = bilateral denoise on the source crop, lanczos4 upscale, light unsharp; scale factor in render.json (cam_scale) and layout.json. Tests: 230 passed, 1 skipped (baseline 192 + 1).
+- Stages 0-2.3 (see git log; 8a5e730 = Stage 2.3 cam verify).
+- Unit A1 (true peak): limiter ceiling -3.0 dBFS (config.LIMITER_CEIL_DB), final ebur128 true-peak check on the finished clip with up to 3 audio-only re-encodes (-1 dB each, video copied), render refuses the clip if still > -1.5; grader TP gate now fails above -1.5 (was -1.0); render.json has audio_final. Tests 234 passed, 1 skipped.
 
-## IN PROGRESS
-- nothing half-done. Stage 3 not started.
-
-## NEXT
-1. Stage 3a: tracking: detect the main character in >=85% of frames, keep inside the crop in >=95%, hold through gaps, smooth the pan (clip_engine/subject.py, track.py; use exclusion.cut_stretches to trim/skip stretches where the clamped crop would cut the character). Opening/start motion must be measured on the SHOWN strip (shown_opening exists; make pick_start use the same crop).
-2. Stage 3b: dead-stretch trim (no character visible) + payoff ending, keep frame-accurate trim; large-v3 on the final clip with the OCR reference; run summary with sha256 / resolution / bitrate of clip.mp4; layout.json already in the artifact.
-3. Stage 4: verification run with cache_only=true on key src-3cb28dbf11cce196-v1 (GitHub Actions workflow_dispatch is not reachable through this connector: the user must trigger it, or give a way). Then read the run artifact and report run id + commit.
+## NEXT (user order)
+A2. Captions centred on the seam y=540 (render calls caption_lane.lanes(False) before the cam is known: captions fall to the bottom lane; move caption/hook build after the cam is verified, cam_top=use_cam).
+B. Kai block quality (TOP priority, size fixed 1080x540 from 360x180): deblock (pp/deblock) -> hqdn3d low -> real upscaler chosen by measurement (lanczos baseline, OpenCV dnn_superres FSRCNN/EDSR, Real-ESRGAN-general ONNX CPU; PSNR/SSIM + blockiness; time/frame benchmark first; 35 min step limit; 30 fps cam with frame duplication allowed) -> gentle unsharp + very light grain. No face restoration. Gate enhanced > plain lanczos; cam_compare.png in artifact; log source format/bitrate in the run summary; do NOT re-download.
+C. Gameplay panel: one lanczos/accurate_rnd/full_chroma_int scale, light cas/unsharp, deband; sharpness gate vs plain-scale baseline (replace median 9.2).
+D. Captions match the voice: every spoken word, word-timed, one style; OCR of game subtitles + Gemini audio transcription as second source (prefer OCR for game dialogue); hook = complete phrase <=6 words, never splits a sentence with caption 1; captions_check.json; gates coverage >=90% of speech seconds and no unresolved source disagreement; keep f*** mask.
+E. Tracking detection rate 62-65% -> >=85% as a gate, same look.
+F. Finder untouched; save docs/reference_clip.json and use as tie-breaker only.
+G. Run summary: sha256, resolution, bitrate of clip.mp4; keep layout.json.
+After each stage: commit sha to the user, ask for a cache_only=true verification run (or start it if the connector allows).
 
 ## KNOWN BREAKS
-- NOTHING from Stage 2 has run on real video: the render path (cv2 face check, denoise, warp, ffmpeg) is untested end to end. The first real run (Stage 4) will show it.
-- Last real run 4488260530 (commit 0d476ea): render exited 1, opening-freeze gate FAIL (motion probe measured the whole 16:9 frame while only a 607 px strip is shown); no facecam found in any corner.
-- Commit 717ad3c leaked a personal email in author/committer. History not rewritten (needs the user's OK).
-- The overlay gate checks the planned crop geometry of every frame, not rendered pixels; a pixel-level check of the finished clip is not written yet.
-- Tracking thresholds (85% detected / 95% inside) are not enforced as gates yet (Stage 3a).
+- Commit 717ad3c and af9a12f leaked a personal email; history NOT rewritten (needs the user's OK).
+- Overlay gate checks planned geometry, not rendered pixels.
 
 ## RUN STATE
-- Last run: 4488260530, render exit 1 (opening freeze). No run this session.
+- Last run: 44924213343 on 8a5e730 (user reviewed; items above). No run started this session yet.

@@ -480,9 +480,9 @@ def build_ass(cw, hook_text, use_cam, rect):
     """ASS for the clip. With the cam block on top every caption line is centred on the seam (y=540); the
     layout must be known first, which is why the render calls this after the cam check."""
     lane = caption_lane.lanes(use_cam, rect, cam_top=use_cam)
-    hook, hook_src, hook_match = hooks.choose_hook(asr_fix.mask_text(hook_text), cw)
-    cap_words = captions.drop_hook_words(cw, hook, hooks.HOOK_SHOW)      # the hook shows the opening words
-    ass = captions.to_ass(cap_words, 0.0, OUT_W, OUT_H, lane["caption_margin_v"], lane["seam_y"])
+    hook, hook_src, hook_match = hooks.phrase_hook(asr_fix.mask_text(hook_text), cw)
+    # every spoken word is captioned: the hook is a separate complete phrase, it never takes words from the captions
+    ass = captions.to_ass(cw, 0.0, OUT_W, OUT_H, lane["caption_margin_v"], lane["seam_y"])
     ass = hooks.add_hook(ass, hook, lane["hook_margin_v"])
     return ass, lane, (hook, hook_src, hook_match)
 

@@ -65,6 +65,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Run mode
+        shell: bash  # bash -e -o pipefail: a failing python must fail the job even behind tee
         run: |
           args=()
           [ -n "$SHEET_ID" ] && args+=(--sheet-id "$SHEET_ID")

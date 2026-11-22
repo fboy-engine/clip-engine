@@ -11,7 +11,7 @@ import subprocess
 
 import numpy as np
 
-from . import cam_sr, download, exclusion, layout, quality, srcinfo, window
+from . import cam_enhance, cam_sr, download, exclusion, layout, quality, srcinfo, window
 
 SWS = "lanczos+accurate_rnd+full_chroma_int"
 N_FRAMES = 8
@@ -70,7 +70,7 @@ def fit_block(img):
     return cv2.resize(img, (1080, layout.CAM_H), interpolation=cv2.INTER_AREA if img.shape[1] > 1080 else cv2.INTER_LANCZOS4)
 
 
-def md_table(res, sel, deb, sinfo, fmt_note):
+def md_table(res, sel, deb, sinfo, fmt_note, b3=None):
     L = ["# Cam upscaler benchmark (real cam crops of the cached source)", "",
          f"Source: {srcinfo.info_line(sinfo)}", fmt_note, "",
          f"Winner: **{sel['method']}** at {sel['cam_fps']} fps cam ({sel['reason']})", "",
@@ -92,6 +92,18 @@ def md_table(res, sel, deb, sinfo, fmt_note):
     for name, r in deb["rows"].items():
         L.append(f"| {name} | {r.get('blockiness', '-')} | {r.get('ssim', '-')} | {'yes' if name == deb['chosen'] else ''} |"
                  if not r.get("error") else f"| {name} | - | - | {r['error']} |")
+    if b3:
+        L += ["", "## B3 chain (what the render uses)", "",
+              f"Upscaler: **{b3['method']}** at {b3['cam_fps']} fps cam ({b3['reason']}). Deblock: {b3['deblock']}. "
+              f"SR share: {b3['blend'] if b3['blend'] is not None else 'NONE PASSES'} (start {b3['blend_start']}). "
+              f"Gate: **{'PASS' if b3['ok'] else 'FAIL'}**" + ("" if b3["ok"] else " - " + "; ".join(b3["reasons"])), "",
+              "| SR share | fidelity | blockiness | edge |", "|---|---|---|---|"]
+        for w, r in b3["blend_rows"].items():
+            L.append(f"| {w} | {r['fidelity']} | {r['blockiness']} | {r['edge']} |")
+        o = b3["old_lanczos"]
+        L.append(f"| plain lanczos (old chain) | {o['fidelity']} | {o['blockiness']} | {o['edge']} |")
+        L += ["", f"Gate: fidelity >= {b3['fidelity_min']} (block shrunk back vs the untouched real crop), blockiness lower than "
+                  "plain lanczos, edge strength higher than plain lanczos."]
     return "\n".join(L) + "\n"
 
 
@@ -179,14 +191,56 @@ def run(media, start, end, out_dir, vod_id="", url="", log=print, cache_dir=None
     sel = cam_sr.choose(results)
     log(f"winner: {sel['method']} at {sel['cam_fps']} fps ({sel['reason']}); rejected: {json.dumps(sel['rejected'])}")
 
-    # cam_compare.png: plain lanczos (raw crop) | chosen chain, two moments
-    win = ups.get(sel["method"]) or ups["lanczos"]
+    # ---- B3: the chain the render uses (user decision: Real-ESRGAN), SR share chosen by measurement ----------
+    b3sel = cam_sr.choose_b3(results)
+    up3 = ups.get(b3sel["method"]) or ups["lanczos"]
+    log(f"B3 upscaler: {b3sel['method']} at {b3sel['cam_fps']} fps ({b3sel['reason']}); rejected: {json.dumps(b3sel['rejected'])}")
+    idx = sorted({0, len(raw) // 3, (2 * len(raw)) // 3, len(raw) - 1})
+    per_w = {w: [] for w in cam_sr.BLEND_STEPS}
+    per_old, shown = [], []
+    for j in idx:
+        r = raw[j]
+        b = r["b"]
+        rx, ry, rw, rh = roi_of(b, region)
+        raw_roi = grab(media, r["t"], crop_vf("", rx, ry, rw, rh), rw, rh)
+        clean_roi = grab(media, r["t"], crop_vf(deb_vf, rx, ry, rw, rh, cam_sr.DENOISE_VF), rw, rh)
+        if raw_roi is None or clean_roi is None:
+            continue
+        roi = (rx, ry, rw, rh)
+        box = (float(b["x"]), float(b["y"]), float(b["w"]), float(b["h"]))
+        ref = cam_enhance.real_small(raw_roi, box, (rx, ry))
+        old = cam_enhance.old_block(raw_roi, box, (rx, ry))
+        per_old.append(cam_enhance.block_metrics(old, ref, box))
+        sr4 = up3.run4(clean_roi)
+        lan4 = cv2.resize(clean_roi, None, fx=cam_sr.SR_FACTOR, fy=cam_sr.SR_FACTOR, interpolation=cv2.INTER_LANCZOS4)
+        for w in cam_sr.BLEND_STEPS:
+            mixed = sr4 if w >= 0.999 else cv2.addWeighted(sr4, w, lan4, 1.0 - w, 0)
+            per_w[w].append(cam_enhance.block_metrics(cam_enhance.to_block(mixed, box, roi, seed=int(r["t"] * 100)), ref, box))
+        shown.append((old, sr4, lan4, box, roi, r["t"]))
+    if not per_old:
+        raise RuntimeError("B3 measurement: no ROI crops could be cut")
+    rows_w = {w: cam_enhance.mean_rows(v) for w, v in per_w.items() if v}
+    base = cam_enhance.mean_rows(per_old)
+    if b3sel["method"] == "lanczos":
+        pick = {"blend": None, "ok": False, "reasons": ["no neural upscaler is available inside the time budget (plain lanczos is not shipped)"]}
+    else:
+        pick = cam_sr.choose_blend(rows_w, base)
+    log(f"B3 blend: {pick} | plain lanczos {base} | rows {json.dumps({str(k): v for k, v in rows_w.items()})}")
+    b3 = {"method": b3sel["method"], "cam_fps": b3sel["cam_fps"], "reason": b3sel["reason"], "rejected": b3sel["rejected"],
+          "deblock": chosen, "deblock_vf": deb_vf, "denoise_vf": cam_sr.DENOISE_VF, "blend": pick["blend"],
+          "blend_start": cam_sr.BLEND_START, "ok": bool(pick["ok"]), "reasons": pick["reasons"],
+          "sec_per_frame_bench_roi": results.get(b3sel["method"], {}).get("sec_per_frame"),
+          "old_lanczos": base, "blend_rows": {str(k): v for k, v in rows_w.items()}, "frames_measured": len(per_old),
+          "fidelity_min": cam_sr.FIDELITY_MIN, "sr_factor": cam_sr.SR_FACTOR}
+
+    # cam_compare.png: OLD chain (lanczos) over NEW chain on the SAME frame, real 1080x540 size, two moments
+    show_w = pick["blend"] if pick["blend"] else cam_sr.BLEND_START
     rows_png = []
-    for r in (raw[0], raw[len(raw) // 2]):
-        plain = fit_block(ups["lanczos"].run(r["img"]))
-        enh = fit_block(cam_sr.finish(win.run(r["clean"]), seed=int(r["t"] * 100)))
-        rows_png.append(np.hstack([label(plain, "plain lanczos x3"),
-                                   label(enh, f"deblock {chosen} + hqdn3d + {sel['method']} + sharpen + grain")]))
+    for old, sr4, lan4, box, roi, t in (shown[0], shown[len(shown) // 2]):
+        mixed = sr4 if show_w >= 0.999 else cv2.addWeighted(sr4, show_w, lan4, 1.0 - show_w, 0)
+        new = cam_enhance.to_block(mixed, box, roi, seed=int(t * 100))
+        rows_png.append(label(old, "OLD: bilateral + lanczos + sharpen"))
+        rows_png.append(label(new, f"NEW: deblock {chosen} + hqdn3d + {b3sel['method']} {int(show_w * 100)}% + sharpen + grain"))
     png = os.path.join(out_dir, "cam_compare.png")
     cv2.imwrite(png, np.vstack(rows_png))
 
@@ -205,10 +259,10 @@ def run(media, start, end, out_dir, vod_id="", url="", log=print, cache_dir=None
     report = {"source": sinfo, "better_formats": better, "format_listing_error": ferr if formats is None else "",
               "frames": [{k: r["b"][k] for k in ("t_off", "x", "y", "w", "h")} for r in raw],
               "region_px": list(region), "deblock": {"chosen": chosen, "rows": deb_rows}, "candidates": results,
-              "selection": sel, "chain": cam_sr.chain_description(chosen, sel["method"], sel["cam_fps"])}
+              "selection": sel, "chain": cam_sr.chain_description(chosen, sel["method"], sel["cam_fps"]), "b3": b3}
     with open(os.path.join(out_dir, "cam_bench.json"), "w") as f:
         json.dump(report, f, indent=1)
-    md = md_table(results, sel, report["deblock"], sinfo, fmt_note)
+    md = md_table(results, sel, report["deblock"], sinfo, fmt_note, b3)
     with open(os.path.join(out_dir, "cam_bench.md"), "w") as f:
         f.write(md)
     return report, md

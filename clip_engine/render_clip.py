@@ -626,4 +626,8 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         json.dump(layout.layout_report(src_w, src_h, rect, cam_info, bxs, stats.get("exclusion")), f, indent=1)
     timings["total_sec"] = round(time.monotonic() - t0, 1)
     log(f"rendered {out_path} in {timings['render_sec']}s (total {timings['total_sec']}s)")
+    if cam_quality:                     # B3 gate: the diagnostics above are already on disk; now refuse a clip that fails it
+        q_ok, q_reasons = cam_sr.quality_verdict(cam_quality)
+        if not q_ok:
+            raise ValueError("cam quality gate failed (the enhanced cam block does not beat plain lanczos): " + "; ".join(q_reasons))
     return r

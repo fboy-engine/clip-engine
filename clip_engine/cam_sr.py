@@ -388,3 +388,15 @@ def plan_cam_fps(sec_per_frame, dur, cap_fps, budget=SR_BUDGET_SEC, tiers=B3_FPS
         if sec_per_frame * SAFETY * (int(np.ceil(dur * fps)) + 2) <= budget:
             return fps
     return None
+
+
+def quality_verdict(cq):
+    """(ok, reasons) for a cam_quality dict (render.json): the three-metric gate on the enhanced block against plain
+    lanczos (face fidelity >= FIDELITY_MIN, blockiness rule, edge strength higher) plus the ghost verdict. One
+    function for the render (refuses the clip) and the grader (fails the check)."""
+    g = gate_numbers(cq["enhanced"], cq["lanczos"])
+    reasons = list(g["reasons"])
+    gh = cq.get("ghost")
+    if gh is not None and not gh.get("ok", False):
+        reasons.append(f"double edges (ghosting) in the in-between frames: {gh.get('detail', 'no detail')}")
+    return not reasons, reasons

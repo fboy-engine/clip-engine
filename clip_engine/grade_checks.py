@@ -3,7 +3,7 @@
 Each check returns {"name", "status", "detail"}; status is pass | fail | warn | n/a.
 A check that cannot measure something says so (warn / n/a); it never passes by default.
 """
-from . import captions, hooks
+from . import cam_sr, captions, hooks
 from .config import (CRF, MIN_LEN, MAX_LEN, OUT_W, OUT_H, PUNCH_TARGET, PUNCH_HARD_CAP,
                      TARGET_LUFS, TRUE_PEAK, HOOK_MAX_SEC)
 
@@ -197,6 +197,24 @@ def check_layout(m):
     return _c(name, NA, "not measured")
 
 
+def check_cam_quality(m):
+    """The cam block must beat plain lanczos on the finished clip: face fidelity >= 0.96 against the untouched real crop,
+    blockiness lower (see cam_sr.blockiness_ok), edge strength higher, no ghosting in the in-between frames."""
+    name = "cam block quality: enhanced beats plain lanczos"
+    r = m.get("render") or {}
+    if r.get("layout") != "cam_top":
+        return _c(name, NA, "no cam block in this layout")
+    cq = r.get("cam_quality")
+    if not cq or not cq.get("enhanced") or not cq.get("lanczos"):
+        return _c(name, FAIL, "no cam quality measurement: the enhanced cam block was not verified")
+    ok, reasons = cam_sr.quality_verdict(cq)
+    e, o = cq["enhanced"], cq["lanczos"]
+    nums = (f"fidelity {e['fidelity']:.4f} (min {cam_sr.FIDELITY_MIN:g}), blockiness {e['blockiness']:.4f} vs plain lanczos "
+            f"{o['blockiness']:.4f}, edge {e['edge']:.2f} vs {o['edge']:.2f}; {cq.get('method')} {cq.get('blend')} share "
+            f"at {cq.get('cam_fps')} fps, {cq.get('interp')}, {cq.get('sr_seconds')} s")
+    return _c(name, PASS if ok else FAIL, nums + (" | " + "; ".join(reasons) if reasons else ""))
+
+
 def check_subject(m):
     """Subject (the player character) inside the gameplay panel in >= 95% of sampled frames."""
     name = "subject inside panel >= 95%"
@@ -284,7 +302,7 @@ def check_hook_match(m):
 
 ALL = (check_video, check_duration, check_trim, check_crf, check_loudness, check_balance, check_audio_added,
        check_hook, check_hook_match, check_opening, check_cold_open, check_ending, check_captions, check_caption_lane,
-       check_layout,
+       check_layout, check_cam_quality,
        check_subject, check_crop, check_visual, check_motion)
 
 

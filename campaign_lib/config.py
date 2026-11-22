@@ -26,6 +26,9 @@ def validate(cfg):
     t = cfg["timings"]
     if t["approve_gap_min"] <= 0 or t["submit_window_min"] <= 0:
         raise ValueError("timings must be positive")
+    u = cfg.get("reach_url")
+    if u is not None and (not str(u).startswith("https://") or any(ch in str(u) for ch in ' "\'\n')):
+        raise ValueError("reach_url must be a plain https:// link (no spaces or quotes): %r" % u)
 
 
 def required_tag(cfg):

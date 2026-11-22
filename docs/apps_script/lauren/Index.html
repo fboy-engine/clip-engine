@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0b0d10">
+<title>Clip panel</title>
+<style>
+  :root { color-scheme: dark; --bg:#0b0d10; --card:#14181d; --line:#232a32; --text:#e8ecf1; --muted:#9aa5b1;
+          --green:#2fbf71; --red:#ff5d5d; --blue:#4c8dff; --amber:#f0b429; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--text); }
+  body { font: 16px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif; padding: 12px 12px 48px; max-width: 560px; margin: 0 auto;
+         padding-top: max(12px, env(safe-area-inset-top)); padding-bottom: max(48px, env(safe-area-inset-bottom)); }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0 0 8px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px; margin-top: 12px; }
+  .muted { color: var(--muted); }
+  .row { display:flex; justify-content:space-between; gap:8px; align-items:baseline; flex-wrap:wrap; }
+  .wrap { overflow-wrap: anywhere; white-space: pre-wrap; }
+  .btn { display:flex; align-items:center; justify-content:center; width:100%; min-height:56px; padding:12px 16px; margin-top:10px;
+         border:0; border-radius:14px; font-family:inherit; font-weight:700; font-size:18px; line-height:1.2; color:#fff; background:var(--blue); text-decoration:none; cursor:pointer;
+         -webkit-tap-highlight-color: transparent; }
+  .btn:active { filter: brightness(.9); }
+  .btn.green { background: var(--green); color:#04210f; }
+  .btn.grey { background:#2a323b; }
+  .btn.off { pointer-events:none; }
+  .btn:disabled, .btn.off { background:#232a32; color:#6b7683; cursor:not-allowed; }
+  .btns { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
+  .btns .btn { margin-top:10px; }
+  .red { color: var(--red); font-weight: 700; }
+  .banner { position: sticky; top: 0; z-index: 5; background: var(--red); color:#fff; font-weight:700; text-align:center; padding:10px; border-radius:12px; margin-bottom:8px; }
+  input[type=text] { width:100%; min-height:56px; font-size:18px; padding:12px; border-radius:12px; border:1px solid var(--line); background:#0f1318; color:var(--text); }
+  .item { padding:10px 0; border-top: 1px solid var(--line); }
+  .item:first-child { border-top: 0; }
+  .tag { display:inline-block; padding:2px 10px; border-radius:999px; background:#232a32; font-size:16px; margin-right:6px; }
+  .tag.live { background: var(--green); color:#04210f; }
+  #overlay { position:fixed; inset:0; background:rgba(0,0,0,.75); display:flex; align-items:center; justify-content:center; padding:20px; z-index:10; }
+  #overlay[hidden], .banner[hidden], section[hidden] { display:none; }
+  .sheet { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:18px; width:100%; max-width:420px; }
+  .sheet p { font-size:20px; font-weight:700; margin:0 0 6px; }
+  #toast { position:fixed; left:12px; right:12px; bottom:calc(16px + env(safe-area-inset-bottom)); background:#e8ecf1; color:#0b0d10; padding:14px; border-radius:12px; text-align:center; font-weight:700; z-index:20; }
+  #toast[hidden] { display:none; }
+</style>
+</head>
+<body>
+<div id="offline" class="banner" hidden>offline, retrying</div>
+
+<header class="card" style="margin-top:0">
+  <h1 id="name">Loading...</h1>
+  <div id="state" class="wrap"></div>
+  <div class="muted" id="updated"></div>
+</header>
+
+<section class="card" id="nextCard" hidden>
+  <h2>Next clip</h2>
+  <div id="title" class="wrap"></div>
+  <div id="hook" class="muted wrap"></div>
+  <div id="caption" class="wrap" style="margin-top:8px"></div>
+  <button class="btn grey" id="copyCaption" type="button">COPY CAPTION</button>
+</section>
+
+<section class="card" id="approveCard">
+  <h2>Approve</h2>
+  <button class="btn green" id="approveBtn" type="button" disabled>APPROVE</button>
+  <div id="approveNote" class="muted" style="margin-top:8px"></div>
+</section>
+
+<section class="card" id="postedCard" hidden>
+  <h2>Posted</h2>
+  <div id="permalink" class="wrap"></div>
+  <div class="btns">
+    <button class="btn grey" id="copyLink" type="button">COPY LINK</button>
+    <a class="btn" id="openLink" href="#" target="_blank" rel="noopener noreferrer">OPEN</a>
+  </div>
+  <div id="submitCount" style="margin-top:10px; font-weight:700"></div>
+</section>
+
+<section class="card">
+  <a class="btn" id="reach" href="https://reachclipping.com/Sisters" target="_blank" rel="noopener noreferrer" style="margin-top:0">Open Reach submit page</a>
+  <div class="muted" style="margin-top:8px">Opens the page only. Nothing is submitted for you.</div>
+</section>
+
+<section class="card" id="addCard" hidden>
+  <h2>Add link</h2>
+  <input type="text" id="linkInput" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="300" placeholder="https://twitch.tv/... or youtube.com/...">
+  <button class="btn" id="addBtn" type="button">Add</button>
+  <div id="addNote" class="muted" style="margin-top:8px"></div>
+</section>
+
+<section class="card">
+  <h2>Queue</h2>
+  <div id="queue"></div>
+</section>
+
+<section class="card">
+  <h2>Last 10 log rows</h2>
+  <div id="log"></div>
+</section>
+
+<div id="overlay" hidden>
+  <div class="sheet">
+    <p>Post this Reel now?</p>
+    <div class="muted" id="confirmClip"></div>
+    <button class="btn green" id="confirmYes" type="button">Yes, post it</button>
+    <button class="btn grey" id="confirmNo" type="button">Cancel</button>
+  </div>
+</div>
+<div id="toast" hidden></div>
+
+<script>
+// LOGIC_BEGIN (pure functions, no DOM: tested in node by tests/apps_script_panel_test.js)
+function fmtCountdown(ms) {
+  var s = Math.max(0, Math.floor(ms / 1000));
+  var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  function p(x) { return (x < 10 ? '0' : '') + x; }
+  if (h > 0) return h + 'h ' + p(m) + 'm';
+  if (m > 0) return m + 'm ' + p(sec) + 's';
+  return sec + 's';
+}
+
+// What the APPROVE button shows. enabled only for AWAITING_APPROVAL with the approve time passed.
+function approveButton(panel, now) {
+  var off = function (note) { return {enabled: false, label: 'APPROVE', note: note}; };
+  if (!panel || !panel.head) return off('Nothing is waiting for approval.');
+  var h = panel.head;
+  if (panel.approvePending) return off('Approved. Waiting for the engine to post.');
+  if (panel.unlockMs !== null && panel.unlockMs !== undefined && now < panel.unlockMs) {
+    return off('opens in ' + fmtCountdown(panel.unlockMs - now));
+  }
+  if (h.state === 'AWAITING_APPROVAL') return {enabled: true, label: 'APPROVE clip #' + h.n, note: ''};
+  if (h.state === 'POSTING') return off('Posting clip #' + h.n + '...');
+  return off('Clip #' + h.n + ' is not ready yet (' + h.state + ').');
+}
+
+// Reach submit countdown: posted + 30 min. Red (urgent) under 5 minutes.
+function submitInfo(posted, now) {
+  if (!posted) return null;
+  var left = posted.submitBeforeMs - now;
+  if (left <= 0) return {closed: true, urgent: false, text: 'Reach window closed (was ' + posted.submitBeforeText + ')', left: ''};
+  return {closed: false, urgent: left < 5 * 60000, text: 'submit to Reach before ' + posted.submitBeforeText, left: fmtCountdown(left)};
+}
+
+// Same rule as Code.gs validateLink_ (the server re-checks): https twitch.tv or youtube.com, max 300.
+function validateLink(raw) {
+  var url = String(raw === null || raw === undefined ? '' : raw).trim();
+  if (!url) return {ok: false, message: 'Paste a link first'};
+  if (url.length > 300) return {ok: false, message: 'Link is longer than 300 characters'};
+  if (!/^https:\/\/(www\.|m\.)?(twitch\.tv|youtube\.com)(\/\S*)?$/i.test(url)) return {ok: false, message: 'Only https twitch.tv or youtube.com links'};
+  return {ok: true, url: url};
+}
+// LOGIC_END
+
+var panel = null, skew = 0, inflight = false, timer = null, pendingN = null;
+function $(id) { return document.getElementById(id); }
+function nowMs() { return Date.now() + skew; }
+function text(id, v) { $(id).textContent = v === null || v === undefined ? '' : String(v); }
+
+function toast(msg) {
+  var t = $('toast'); t.textContent = msg; t.hidden = false;
+  clearTimeout(toast.h); toast.h = setTimeout(function () { t.hidden = true; }, 2600);
+}
+
+function copyText(value) {
+  function fallback() {
+    var ta = document.createElement('textarea');
+    ta.value = value; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0'; ta.style.top = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select(); ta.setSelectionRange(0, value.length);
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    toast(ok ? 'Copied' : 'Copy failed - long-press the text');
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(value).then(function () { toast('Copied'); }, fallback);
+  } else { fallback(); }
+}
+
+function addRows(container, rows) {
+  while (container.firstChild) container.removeChild(container.firstChild);
+  rows.forEach(function (r) {
+    var d = document.createElement('div'); d.className = 'item wrap';
+    r.forEach(function (part) {
+      var s = document.createElement('span');
+      s.className = part.cls || ''; s.textContent = part.t + ' ';
+      d.appendChild(s);
+    });
+    container.appendChild(d);
+  });
+  if (!rows.length) { var e = document.createElement('div'); e.className = 'muted'; e.textContent = 'Nothing yet'; container.appendChild(e); }
+}
+
+function renderLive() {   // runs every second: only the countdown-driven bits
+  if (!panel) return;
+  var now = nowMs(), b = approveButton(panel, now);
+  var btn = $('approveBtn');
+  btn.disabled = !b.enabled; btn.textContent = b.label;
+  text('approveNote', b.note);
+  if (!b.enabled && !$('overlay').hidden) { $('overlay').hidden = true; pendingN = null; }
+  var si = submitInfo(panel.posted, now), el = $('submitCount');
+  if (si) {
+    el.textContent = si.text + (si.left ? '  -  ' + si.left + ' left' : '');
+    el.className = si.urgent ? 'red' : '';
+  }
+}
+
+function render(p) {
+  panel = p; skew = p.serverNow - Date.now();
+  text('name', p.name || 'Campaign'); text('state', p.stateText); text('updated', 'updated ' + p.updated + ' (Asia/Karachi)');
+  $('nextCard').hidden = !p.head;
+  if (p.head) { text('title', p.nextText); text('hook', p.head.hook ? 'Hook: ' + p.head.hook : ''); text('caption', p.head.caption); }
+  $('postedCard').hidden = !p.posted;
+  if (p.posted) {
+    text('permalink', p.posted.permalink || '(no link yet)');
+    var o = $('openLink');
+    if (p.posted.permalink) { o.href = p.posted.permalink; o.classList.remove('off'); } else { o.removeAttribute('href'); o.classList.add('off'); }
+  }
+  if (/^https:\/\//.test(p.reachUrl || '')) $('reach').href = p.reachUrl;
+  $('addCard').hidden = !p.canAdd;
+  addRows($('queue'), p.queue.map(function (q) {
+    return [{t: '#' + q.n, cls: ''}, {t: q.state, cls: 'tag' + (q.state === 'AWAITING_APPROVAL' ? ' live' : '')}, {t: q.kind + ' ' + q.label, cls: 'muted'}];
+  }));
+  addRows($('log'), p.log.map(function (l) { return [{t: l.t, cls: 'muted'}, {t: l.event, cls: ''}, {t: l.detail, cls: 'muted'}]; }));
+  renderLive();
+}
+
+function setOnline(ok) { $('offline').hidden = ok; }
+function schedule() { clearTimeout(timer); timer = setTimeout(refresh, 10000); }
+function refresh() {
+  if (inflight) return;
+  inflight = true;
+  google.script.run
+    .withSuccessHandler(function (p) { inflight = false; setOnline(true); render(p); schedule(); })
+    .withFailureHandler(function () { inflight = false; setOnline(false); schedule(); })
+    .getPanel();
+}
+
+$('copyCaption').addEventListener('click', function () { if (panel && panel.head) copyText(panel.head.caption); });
+$('copyLink').addEventListener('click', function () { if (panel && panel.posted && panel.posted.permalink) copyText(panel.posted.permalink); });
+
+$('approveBtn').addEventListener('click', function () {
+  if (!panel || !approveButton(panel, nowMs()).enabled) return;
+  pendingN = panel.head.n;
+  text('confirmClip', 'Clip #' + pendingN);
+  $('overlay').hidden = false;
+});
+$('confirmNo').addEventListener('click', function () { $('overlay').hidden = true; pendingN = null; });
+$('confirmYes').addEventListener('click', function () {
+  var n = pendingN; $('overlay').hidden = true; pendingN = null;
+  if (n === null) return;
+  $('approveBtn').disabled = true;
+  google.script.run
+    .withSuccessHandler(function (r) { toast(r.message); if (r.panel) render(r.panel); schedule(); })
+    .withFailureHandler(function () { setOnline(false); toast('Not sent - offline'); renderLive(); })
+    .approveClip(n);
+});
+
+$('addBtn').addEventListener('click', function () {
+  var v = validateLink($('linkInput').value);
+  if (!v.ok) { text('addNote', v.message); return; }
+  text('addNote', 'Adding...'); $('addBtn').disabled = true;
+  google.script.run
+    .withSuccessHandler(function (r) {
+      $('addBtn').disabled = false; text('addNote', r.message); toast(r.message);
+      if (r.ok) $('linkInput').value = '';
+      if (r.panel) render(r.panel);
+    })
+    .withFailureHandler(function () { $('addBtn').disabled = false; setOnline(false); text('addNote', 'Not sent - offline'); })
+    .addLink(v.url);
+});
+
+document.addEventListener('visibilitychange', function () { if (!document.hidden) refresh(); });
+setInterval(renderLive, 1000);
+refresh();
+</script>
+</body>
+</html>

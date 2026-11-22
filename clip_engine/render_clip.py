@@ -5,6 +5,7 @@ and ffmpeg does decode and encode. Audio is the stream's own audio only: two sho
 clicks and a two-pass loudnorm to -14 LUFS. No music, no SFX, no transitions are ever added.
 """
 import gc
+import hashlib
 import json
 import os
 import re
@@ -15,7 +16,7 @@ from fractions import Fraction
 import numpy as np
 
 from . import (asr_fix, balance, caption_lane, captions, cam_enhance, cam_layout, cam_sr, config, download, exclusion, hooks,
-               layout, select_clean, subject, track, transcribe, trim, vision)
+               layout, select_clean, srcinfo, subject, track, transcribe, trim, vision)
 from .cropplan import punch_curve, smooth
 
 OUT_W, OUT_H = config.OUT_W, config.OUT_H
@@ -244,6 +245,47 @@ def load_b3(out_dir):
     if not b3.get("ok") or b3.get("blend") is None:
         raise ValueError("cam quality gate failed in the benchmark: " + "; ".join(b3.get("reasons") or ["no SR share passes"]))
     return b3
+
+
+def clip_file_info(path, probe=None):
+    """sha256, resolution, fps and bitrate of the finished clip.mp4 (the run summary shows them)."""
+    info = (probe or srcinfo.media_info)(path)
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return {"sha256": h.hexdigest(), "width": info.get("width"), "height": info.get("height"), "fps": info.get("fps"),
+            "video_kbps": info.get("video_kbps"), "size_mb": info.get("size_mb"), "duration": info.get("duration"),
+            "vcodec": info.get("vcodec")}
+
+
+def summary_md(r):
+    """Run-summary text: source format and bitrate, the clip file (sha256, resolution, bitrate) and the cam block numbers.
+    Empty string when render.json has none of it."""
+    if not r or not (r.get("source_format") or r.get("clip_file") or r.get("cam_quality")):
+        return ""
+    L = ["### Source and clip"]
+    sf = r.get("source_format")
+    if sf:
+        L.append(f"- source file: {srcinfo.info_line(sf)}")
+    cf = r.get("clip_file")
+    if cf:
+        br = f"{cf['video_kbps']} kbps" if cf.get("video_kbps") else "bitrate unknown"
+        L += [f"- clip.mp4: {cf.get('width')}x{cf.get('height')} {cf.get('fps')} fps, {br}, {cf.get('size_mb')} MB",
+              f"- clip.mp4 sha256: `{cf.get('sha256')}`"]
+    cq = r.get("cam_quality")
+    if cq:
+        e, o = cq.get("enhanced") or {}, cq.get("lanczos") or {}
+        ok, reasons = cam_sr.quality_verdict(cq) if e and o else (False, ["no measurement"])
+        L += ["", "### Cam block (1080x540)",
+              f"- chain: {cq.get('chain') or cq.get('method')}",
+              f"- {cq.get('method')} share {cq.get('blend')} at {cq.get('cam_fps')} fps SR, {cq.get('interp')} in-betweens, "
+              f"deblock {cq.get('deblock') or 'none'}, SR time {cq.get('sr_seconds')} s",
+              f"- measured on the rendered frames: fidelity {e.get('fidelity')} (min {cam_sr.FIDELITY_MIN:g}), blockiness "
+              f"{e.get('blockiness')} (plain lanczos {o.get('blockiness')}), edge {e.get('edge')} (plain lanczos {o.get('edge')})",
+              f"- ghost check: {'ok' if (cq.get('ghost') or {}).get('ok', True) else 'FAILED'}; gate: **{'PASS' if ok else 'FAIL'}**"
+              + ("" if ok else " - " + "; ".join(reasons))]
+    return "\n".join(L) + "\n"
 
 
 def render_frames(media, start, n, fps, bxs, src_w, src_h, enc_cmd, enc_log, cam_bxs=None, cam_region=None,
@@ -605,6 +647,12 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
                          f"{len(audio_final['passes'])} measurements: refusing the clip")
 
     cam_quality = cam_enhance.quality_report(cam_stream, cam_prep, probe) if cam_stream is not None else None
+    if probe and probe["pairs"]:
+        n_cmp = cam_enhance.write_compare(probe, os.path.join(out_dir, "cam_compare.png"),
+                                          f"NEW: {cam_quality['chain'][:80]}")
+        log(f"cam_compare.png: {n_cmp} moments, old chain over new chain, real 1080x540")
+    source_format = srcinfo.media_info(media)
+    clip_file = clip_file_info(out_path)
     if cam_quality:
         timings["cam_sr_sec"] = cam_quality["sr_seconds"]
         log(f"cam quality: fidelity {cam_quality['fidelity']} blockiness {cam_quality['blockiness']} edge {cam_quality['edge']} "
@@ -614,6 +662,7 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
          "expected": {"frames": n, "duration": round(dur, 4), "source_fps": fps}, "short_frames": short,
          "hook": {"text": hook, "source": hook_src, "match": hook_match}, "trim": trim_info, "words": len(cw), "asr": meta, "notes": notes,
          "word_spans": [[round(w["s"], 3), round(w["e"], 3)] for w in cw],
+         "source_format": source_format, "clip_file": clip_file,
          "cam_diag": diag, "crop_points": pts,
          "cam_scale": {"upscale": cam_info.get("upscale"), "box_px": cam_info.get("box_px"),
                        "chain": cam_quality["chain"] if cam_quality else "none (no cam block)"}, "cam_quality": cam_quality, "loudnorm_input": ln, "audio_final": audio_final, "timings": timings,

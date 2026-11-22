@@ -132,14 +132,26 @@ def _grade_out(out):
     return 1 if grade_checks.failed(checks) else 0
 
 
+def _step_summary(text):
+    """Print the text and append it to the Actions run summary (nothing for an empty text)."""
+    if not text:
+        return
+    print(text)
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a") as f:
+            f.write(text)
+
+
 def cmd_render(a):
     from . import render_clip
     from . import window
     rect = [float(x) for x in a.cam_rect.split(",")] if a.cam_rect else None
     try:
         window.check_window(a.start, a.end)
-        render_clip.render(a.media, a.start, a.end, a.out, a.hook, a.cam_corner, rect,
-                           model=a.model, cache_dir=a.cache_dir, payoff=a.payoff, vod_id=a.vod_id)
+        res = render_clip.render(a.media, a.start, a.end, a.out, a.hook, a.cam_corner, rect,
+                                 model=a.model, cache_dir=a.cache_dir, payoff=a.payoff, vod_id=a.vod_id)
+        _step_summary(render_clip.summary_md(res or {}))
     except Exception as e:  # report the real failure, never fake a pass
         msg = f"FAIL render: {type(e).__name__}: {str(e)[:900]}"
         print(msg)
@@ -157,6 +169,11 @@ def cmd_render(a):
         if summary:
             with open(summary, "a") as f:
                 f.write("### Clip render FAILED (no clip)\n```\n" + "\n".join(lines) + "\n```\n")
+        try:    # a gate refusal leaves render.json behind: its numbers are the evidence
+            with open(os.path.join(a.out, "render.json")) as f:
+                _step_summary(render_clip.summary_md(json.load(f)))
+        except Exception:
+            pass
         return 1
     return _grade_out(a.out)
 

@@ -420,3 +420,26 @@ def quality_report(stream, info, probe):
             "enhanced": enh, "lanczos": old, "fidelity": enh["fidelity"], "blockiness": enh["blockiness"], "edge": enh["edge"],
             "ghost": info.get("ghost"), "ghost_ok": bool((info.get("ghost") or {}).get("ok")),
             "flow_failed": info.get("flow_failed"), "gate": gate, "probe_frames": len(probe["rows"])}
+
+
+def label(img, text):
+    import cv2
+    out = img.copy()
+    cv2.rectangle(out, (0, out.shape[0] - 30), (out.shape[1], out.shape[0]), (0, 0, 0), -1)
+    cv2.putText(out, text, (12, out.shape[0] - 9), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+    return out
+
+
+def write_compare(probe, path, new_label="NEW", old_label="OLD: bilateral + lanczos4 + unsharp"):
+    """cam_compare.png: for each probed moment the OLD chain's block over the NEW chain's block, both the real
+    1080x540 and made from the SAME source frame (the frames the render itself produced). Returns the number of
+    moments written (0 = nothing to show, no file)."""
+    import cv2
+    rows = []
+    for i, old, new in probe.get("pairs", []):
+        rows.append(label(old, f"{old_label} (frame {i})"))
+        rows.append(label(new, f"{new_label} (frame {i})"))
+    if not rows:
+        return 0
+    cv2.imwrite(path, np.vstack(rows))
+    return len(rows) // 2

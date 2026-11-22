@@ -46,7 +46,8 @@ def find_key(obj, key):
 
 class Client:
     def __init__(self, api_key=None, account_id=None, user_id=None, toolkit="googlesheets"):
-        self.api_key = api_key or os.environ.get("COMPOSIO_API_KEY", "")
+        # Secrets pasted on a phone often carry a trailing newline/space or wrapping quotes.
+        self.api_key = (api_key or os.environ.get("COMPOSIO_API_KEY", "") or "").strip().strip("\"'").strip()
         if not self.api_key:
             raise ComposioError("COMPOSIO_API_KEY is NOT SET")
         self.account_id = account_id or os.environ.get("COMPOSIO_CONNECTED_ACCOUNT_ID") or None
@@ -58,6 +59,7 @@ class Client:
     def _call(self, method, path, body=None, timeout=60):
         data = json.dumps(body).encode() if body is not None else None
         retried = switched = False
+        first_err = ""
         while True:
             req = urllib.request.Request(
                 BASE + path, data=data, method=method,
@@ -70,7 +72,7 @@ class Client:
                 text = scrub(e.read().decode(errors="replace"), self.api_key)[:500]
                 if e.code == 401 and not switched and not os.environ.get("COMPOSIO_AUTH_HEADER"):
                     # Fallback: some Composio keys (consumer keys) only work in x-consumer-api-key.
-                    switched = True
+                    switched, first_err = True, text
                     self.auth_header = ALT_AUTH_HEADER
                     print("note: 401 with %s, retrying once with %s" % (AUTH_HEADER, ALT_AUTH_HEADER),
                           file=sys.stderr)
@@ -79,6 +81,8 @@ class Client:
                     retried = True
                     time.sleep(3)
                     continue
+                if switched and first_err:  # report the primary header's answer, it is the meaningful one
+                    text = "%s (fallback header %s also rejected)" % (first_err, ALT_AUTH_HEADER)
                 raise ComposioError("HTTP %s on %s %s: %s" % (e.code, method, path.split("?")[0], text))
             except (urllib.error.URLError, TimeoutError) as e:
                 if not retried:

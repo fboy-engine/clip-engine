@@ -38,6 +38,17 @@ def _http_401():
     return urllib.error.HTTPError("u", 401, "x", {}, io.BytesIO(b'{"error":{"message":"Invalid API key: ***"}}'))
 
 
+class KeyCleanupTests(unittest.TestCase):
+    def test_whitespace_and_quotes_stripped(self):
+        self.assertEqual(composio.Client(api_key=' "ak_FAKE"\n').api_key, "ak_FAKE")
+        self.assertEqual(composio.Client(api_key="ak_FAKE").api_key, "ak_FAKE")
+
+    def test_blank_key_is_not_set(self):
+        os.environ.pop("COMPOSIO_API_KEY", None)
+        with self.assertRaises(composio.ComposioError):
+            composio.Client(api_key=" \n ")
+
+
 class AuthHeaderFallbackTests(unittest.TestCase):
     def setUp(self):
         os.environ.pop("COMPOSIO_AUTH_HEADER", None)
@@ -66,6 +77,8 @@ class AuthHeaderFallbackTests(unittest.TestCase):
             with self.assertRaises(composio.ComposioError) as cm:
                 c._call("GET", "/connected_accounts")
         self.assertIn("401", str(cm.exception))
+        self.assertIn("Invalid API key", str(cm.exception))
+        self.assertIn("also rejected", str(cm.exception))
         self.assertNotIn("ck_FAKE123", str(cm.exception))
 
     def test_pinned_header_env_disables_fallback(self):

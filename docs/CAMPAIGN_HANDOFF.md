@@ -15,7 +15,12 @@ IG_ACCESS_TOKEN_LAUREN and IG_USER_ID_LAUREN: the user already added them. COMPO
 
 ## Layout
 - campaigns/lauren-hamden/campaign.json: name, handle, caption rules, timings (150 / 30 min), sheet id, secret names, 10 sources.
-- campaign_lib/: config.py, caption.py, states.py (+ sheet/runner from B3). Stdlib only.
+- campaign_lib/ (stdlib only, no Instagram code anywhere in it):
+  - config.py, caption.py, states.py (B2).
+  - composio.py (B3a): minimal Composio v3 REST client. Key from env COMPOSIO_API_KEY (never printed, scrubbed from errors). Discovers the ACTIVE googlesheets connected account itself. execute(slug, args) = POST /tools/execute/<slug>. One retry on 429/5xx/network.
+  - sheet.py (B3a): layout + SheetIO. Campaign tab = labels in col A, values in col B (state, next, caption, approve, timer, opens, link, submit, add_link, add_confirm, updated; machine cells unlock_utc, log_rows). Queue tab = 13 columns (#, Source, Kind, State, Moment, Hook, Caption, Note, Posted at, Media id, Reel link, Submit before, Updated). Log tab = Time, Event, Detail. read() = GOOGLESHEETS_BATCH_GET, write() = GOOGLESHEETS_UPDATE_VALUES_BATCH (RAW, one range per named cell, so a user edit between read and write is not overwritten). init_payload() builds a fresh sheet (real sources or fake clips).
+  - runner.py (B3a): tick() = read sheet, add link (only when all used), fake edit, states.plan, fake POST (clearly fake id + permalink FAKE<n>), write Campaign box. A real (non-fake) clip with an APPROVE tick is NOT posted: tick cleared, log says uploader not enabled.
+  - cli.py (B3a): python -m campaign_lib.cli secrets|probe|init|tick (--sheet-id, --fake, --gap-min, --submit-min).
 - .github/workflows/campaign-lauren-hamden.yml: own file, own concurrency group `campaign-lauren-hamden`. clip.yml is not touched. Another campaign = its own folder/workflow/group/cache keys; it must never change or reset this one.
 - tests/test_campaign_*.py (run by unit-tests.yml with unittest discover).
 
@@ -31,4 +36,7 @@ QUEUED -> EDITING -> READY -> AWAITING_APPROVAL -> POSTING -> POSTED -> DONE.
 
 ## Build log
 - B1 (5ed0838, e30344b): link check, run 45045375994: 10/10 links OK (clip 8 = 19 s "short source"; stream 3772 s, has Audio_Only).
-- B2: campaign.json, state machine, caption builder + tag test.
+- B2 (caaebab): campaign.json, state machine, caption builder + tag test.
+- B3a (426bc11): composio.py, sheet.py, runner.py, cli.py. Fake clips only. NOTE: its commit message mentions workflow modes, but the workflow on main still only had `linkcheck` (the previous Claude hit its usage limit before pushing them). Modes secrets/probe/init/tick come in B3b.
+- B3b (in progress): workflow modes secrets/probe/init/tick; Campaign-tab cell "Open Reach submit page" (campaign.json `reach_url` = https://reachclipping.com/Sisters, one config value; it only opens the page, we never submit anything); sheet created through the Composio Sheets connector if COMPOSIO_API_KEY is not set yet; sheet id goes into campaign.json sheet.id.
+- State at B3b start: the Google Sheet does not exist yet (account johndoe.gitz@gmail.com). IG secrets are set. COMPOSIO_API_KEY unknown until mode `secrets` runs.

@@ -82,5 +82,15 @@ REAL TWITCH SOURCE FACTS (measured from the clip in the sandbox, yt-dlp 2026.10.
 
 Units done: A1c-1 caption_sources (2e18169); A1c-2a captions_pass + grader check_caption_words (2e8ff73); A1c-2b render() wiring +
 clip.yml tesseract/GEMINI env (eeb6063). 411 tests passed, 6 skipped.
-Next unit: A3-1 clip_engine/camfind.py (generic cam/overlay detector, confidence gate), then A3-2 wire into render(), A3-3 Twitch
-download in cli/clip.yml.
+A3 STATE (session 2): A3-1a DONE: clip_engine/camfind.py (detect_media, detect, cam_window, draw_debug, find_chat, persistent_lines) +
+tests/test_camfind.py (10 tests; the real-clip test runs with CLIP_TWITCH_MP4=<mp4>, else skipped). Full suite 421 passed.
+REAL TWITCH RESULT (24 frames, 57 s in the workbench, no ffmpeg): cam rect px (1304,0,1920,424) = top-right 616x424, confidence 0.989.
+Evidence: Haar face stable in 23/24 frames at (1470,148) w84 plus a 2nd stable face (1850,165) w109 (two people in the cam); left border =
+persistent vertical edge x=1303 (y 0..178); bottom border = persistent horizontal edge y=424. Chat column at the right edge (text-line pitch
+52 px, strength 0.586) x1728..1920 y424..1074; zones cam, chat, side_panel (x1304..1920, full height). The big bright left block is NOT
+chat (periodicity 0.19) = gameplay. The frames could not be VIEWED in the sandbox (egress blocked): the annotated cam_debug.jpg is for the user.
+Rule: stable face track + persistent straight borders (or frame edge); raises CamNotConfident (clear reasons) without a face track, without
+any border, when the rectangle is implausible, or when two rectangles tie. Known gaps: floating counters/timers outside the cam/chat column
+are not detected; a cam with no border needs cam_rect.
+Next: A3-1b rendered-output gate (camfind.rendered_gate), A3-2 wiring in render() (+ layout.cam_boxes full 2:1 window), A3-3 cli/clip.yml
+Twitch download (no cookies, no WARP) + verification run.

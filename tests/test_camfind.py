@@ -1,0 +1,134 @@
+"""A3-1: the generic cam/overlay detector on synthetic frames (fake face detector) and, when available, the real Twitch clip."""
+import os
+
+import numpy as np
+import pytest
+
+cv2 = pytest.importorskip("cv2")
+from clip_engine import camfind as cf   # noqa: E402
+
+W, H, N = 960, 540, 12
+
+
+def frames(cam=(652, 0, 960, 212), border=True, chat=True, seed=1):
+    """Gray frames: game noise that changes every frame, a static bordered cam, a scrolling chat column under it."""
+    rng = np.random.default_rng(seed)
+    out = []
+    for i in range(N):
+        g = cv2.resize(rng.integers(40, 200, (7, 12)).astype(np.uint8), (W, H), interpolation=cv2.INTER_NEAREST)
+        g = np.roll(g, (int(rng.integers(0, 77)), int(rng.integers(0, 80))), axis=(0, 1))     # game content moves: no fixed edges
+        if cam:
+            x0, y0, x1, y1 = cam
+            g[y0:y1, x0:x1] = np.clip(45 + rng.normal(0, 3, (y1 - y0, x1 - x0)), 0, 255).astype(np.uint8)
+            if border:                      # a 2 px border on every side that is not the frame edge
+                if x0 > 0:
+                    g[y0:y1, x0:x0 + 2] = 255
+                if x1 < W:
+                    g[y0:y1, x1 - 2:x1] = 255
+                if y0 > 0:
+                    g[y0:y0 + 2, x0:x1] = 255
+                if y1 < H:
+                    g[y1 - 2:y1, x0:x1] = 255
+        if chat:
+            top = cam[3] if cam else 0
+            g[top:, 800:] = 30
+            tr = np.random.default_rng(7)
+            rows = [tr.integers(0, 2, 160 // 3 + 1).repeat(3)[:160] * 170 + 30 for _ in range(40)]
+            scroll = (i * 9) % 26
+            for r, row in enumerate(rows):
+                y = top + r * 26 - scroll
+                if top <= y and y + 12 <= H:
+                    g[y:y + 12, 800:] = row.astype(np.uint8)
+        out.append(g)
+    return out
+
+
+def faces_at(cx, cy, w, hit=1.0, jitter=1.5, seed=3):
+    rng = np.random.default_rng(seed)
+
+    def fn(gray):
+        return [(i, cx + rng.normal(0, jitter), cy + rng.normal(0, jitter), float(w)) for i in range(len(gray))
+                if rng.random() < hit]
+    return fn
+
+
+def test_top_right_cam_with_chat():
+    r = cf.detect(frames(), face_fn=faces_at(735, 74, 42))
+    x0, y0, x1, y1 = r["cam"]["rect_px"]
+    assert abs(x0 - 652) <= 6 and y0 == 0 and x1 == W and abs(y1 - 212) <= 6
+    assert r["confidence"] >= 0.9 and r["cam"]["sides"]["left"] == "line" and r["cam"]["sides"]["bottom"] == "line"
+    assert r["chat"] and r["chat"]["side"] == "right" and abs(r["chat"]["pitch_px"] - 26) <= 1
+    assert "side_panel" in r["zones"] and r["zones"]["side_panel"][0] <= 652 + 6 and r["zones"]["side_panel"][3] == H
+
+
+def test_bottom_left_cam_any_corner():
+    r = cf.detect(frames(cam=(0, 330, 300, H), chat=False), face_fn=faces_at(120, 420, 40))
+    x0, y0, x1, y1 = r["cam"]["rect_px"]
+    assert x0 == 0 and y1 == H and abs(x1 - 300) <= 6 and abs(y0 - 330) <= 6 and r["confidence"] >= 0.6
+    assert r["chat"] is None and r["zones"].keys() == {"cam"}
+
+
+def test_no_face_fails_with_clear_message():
+    with pytest.raises(cf.CamNotConfident) as e:
+        cf.detect(frames(), face_fn=lambda g: [])
+    assert "no stable face" in str(e.value) and "cam_rect" in str(e.value)
+
+
+def test_face_without_any_border_is_not_a_cam():
+    with pytest.raises(cf.CamNotConfident) as e:
+        cf.detect(frames(cam=None, chat=False), face_fn=faces_at(480, 270, 40))
+    assert "cam_rect" in str(e.value)
+    assert e.value.info["candidates"][0]["reasons"]
+
+
+def test_wandering_face_is_not_a_cam():     # a game character: seen in few frames, moving around
+    def fn(gray):
+        rng = np.random.default_rng(5)
+        return [(i, float(rng.integers(50, 600)), float(rng.integers(50, 400)), 40.0) for i in range(len(gray)) if i % 3 == 0]
+    with pytest.raises(cf.CamNotConfident):
+        cf.detect(frames(), face_fn=fn)
+
+
+def test_too_few_frames():
+    with pytest.raises(cf.CamNotConfident):
+        cf.detect(frames()[:3], face_fn=faces_at(735, 74, 42))
+
+
+def test_two_equally_good_cams_are_ambiguous():
+    fr = frames(cam=(652, 0, 960, 212), chat=False)
+    for g in fr:                                    # a second bordered cam, bottom left
+        g[330:540, 0:300] = 45
+        g[330:540, 298:300] = 255
+        g[330:332, 0:300] = 255
+
+    def fn(gray):
+        return [(i, 735, 74, 42.0) for i in range(len(gray))] + [(i, 120, 420, 42.0) for i in range(len(gray))]
+    with pytest.raises(cf.CamNotConfident) as e:
+        cf.detect(fr, face_fn=fn)
+    assert "equally plausible" in str(e.value)
+
+
+def test_cam_window_is_two_to_one_and_never_stretched():
+    w = cf.cam_window((1304, 0, 1920, 424), 1470, 148)           # the real Twitch cam
+    assert w["box"][2] == 616 and w["box"][3] == 308 and w["mode"] == "upscale" and abs(w["scale"] - 1080 / 616) < 0.001
+    assert w["box"][0] == 1304 and 0 <= w["box"][1] <= 424 - 308
+    big = cf.cam_window((100, 100, 1500, 900), 800, 400)         # a cam wider than the 1080 output: downscale
+    assert big["mode"] == "downscale" and big["scale"] < 1 and big["box"][2] == 1400 and big["box"][3] == 700
+    flat = cf.cam_window((0, 0, 1000, 300), 500, 100)            # height limits the 2:1 window
+    assert flat["box"][2] == 600 and flat["box"][3] == 300
+
+
+def test_override_helpers_do_not_invent_a_rect_when_not_confident():
+    with pytest.raises(cf.CamNotConfident):
+        cf.detect(frames(), face_fn=faces_at(735, 74, 42, hit=0.2))
+
+
+REAL = os.environ.get("CLIP_TWITCH_MP4")
+
+
+@pytest.mark.skipif(not (REAL and os.path.exists(REAL)), reason="set CLIP_TWITCH_MP4 to the Lauren Twitch clip")
+def test_real_twitch_clip():
+    r = cf.detect_media(REAL, 0.5, 36.5, 1920, 1080)
+    x0, y0, x1, y1 = r["cam"]["rect_px"]
+    assert abs(x0 - 1304) <= 12 and y0 == 0 and x1 == 1920 and abs(y1 - 424) <= 12
+    assert r["confidence"] >= 0.9 and r["chat"]["side"] == "right"

@@ -9,7 +9,7 @@ import time
 import urllib.error
 import urllib.request
 
-BASE = os.environ.get("COMPOSIO_BASE", "https://backend.composio.dev/api/v3")
+BASE = os.environ.get("COMPOSIO_BASE", "https://backend.composio.dev/api/v3.1")
 AUTH_HEADER, ALT_AUTH_HEADER = "x-api-key", "x-consumer-api-key"
 
 

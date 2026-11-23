@@ -17,11 +17,13 @@ var TZ = 'Asia/Karachi';                                          // campaign.js
 var REACH_URL = 'https://reachclipping.com/Sisters';              // campaign.json reach_url (open only, never submitted)
 var SUBMIT_WINDOW_MIN = 30;                                       // campaign.json timings.submit_window_min
 var LOG_ROWS = 10;
+var ENGINE_STALE_MS = 5 * 60000;   // engine.py STALE_S: heartbeat older than this = engine offline
+var TOKEN_WARN_DAYS = 7;           // engine.py TOKEN_WARN_DAYS
 var MAX_LINK_CHARS = 300;
 
 // CELL_MAP_BEGIN
 var TABS = {campaign: 'Campaign', queue: 'Queue', log: 'Log'};
-var CELLS = {name: 3, state: 4, next: 5, caption: 6, approve: 7, timer: 8, opens: 9, link: 10, submit: 11, add_link: 12, add_confirm: 13, updated: 14, unlock_utc: 16, log_rows: 17};
+var CELLS = {name: 3, state: 4, next: 5, caption: 6, approve: 7, timer: 8, opens: 9, link: 10, submit: 11, add_link: 12, add_confirm: 13, updated: 14, unlock_utc: 16, log_rows: 17, lock_run: 18, heartbeat: 19, ig_expires: 20, handoff: 21, loop_start: 22};
 var QUEUE_LAST_ROW = 100;
 var QUEUE_COLS = ['n', 'source', 'kind', 'state', 'moment', 'hook', 'caption', 'note', 'posted_at', 'media_id', 'link', 'submit_before', 'updated'];
 // CELL_MAP_END
@@ -52,7 +54,7 @@ function readSnapshot_(s) {
     logRows = s.log.getRange(first, 1, lastLog - first + 1, 3).getValues();
   }
   return {
-    camp: s.camp.getRange(1, 1, 20, 2).getValues(),
+    camp: s.camp.getRange(1, 1, 25, 2).getValues(),
     queue: s.queue.getRange(1, 1, QUEUE_LAST_ROW, QUEUE_COLS.length).getValues(),
     log: logRows
   };
@@ -79,6 +81,30 @@ function toMs_(v) {
   if (typeof v !== 'string') return null;
   var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z$/.exec(v);
   return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : null;
+}
+
+/** Same rule as engine.engine_status in campaign_lib/engine.py. */
+function engineStatus_(cells, nowMs) {
+  var hb = toMs_(cells.heartbeat);
+  if (hb === null) return {live: false, text: 'engine offline (never started)'};
+  if (nowMs - hb < ENGINE_STALE_MS) return {live: true, text: ''};
+  return {live: false, text: 'engine offline since ' + fmt_(hb, 'HH:mm')};
+}
+
+/** Same rule as engine.token_warning in campaign_lib/engine.py: calendar days in UTC. */
+function tokenWarning_(raw, nowMs) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}:\d{2}Z)?$/.exec(String(raw === null || raw === undefined ? '' : raw).trim());
+  if (!m) return '';
+  var dayMs = Date.UTC(+m[1], +m[2] - 1, +m[3]);
+  var endMs = dayMs + 86400000 - 1000;
+  var withTime = /T/.test(String(raw));
+  if (withTime) endMs = toMs_(String(raw).trim());
+  var label = m[1] + '-' + m[2] + '-' + m[3];
+  if (nowMs > endMs) return 'Instagram token EXPIRED - renew it before the next post';
+  var n = new Date(nowMs);
+  var days = Math.round((dayMs - Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate())) / 86400000);
+  if (days > TOKEN_WARN_DAYS) return '';
+  return 'Instagram token expires ' + (days === 0 ? 'today' : 'in ' + days + ' day' + (days === 1 ? '' : 's')) + ' (' + label + ')';
 }
 
 function nowMs_() {
@@ -164,6 +190,9 @@ function buildPanel_(snap, nowMs) {
     updated: fmt_(nowMs, 'HH:mm'),
     name: clean_(cells.name, 120),
     stateText: clean_(cells.state, 200),
+    engineText: engineStatus_(cells, nowMs).text,
+    engineLive: engineStatus_(cells, nowMs).live,
+    tokenWarning: tokenWarning_(cells.ig_expires, nowMs),
     nextText: clean_(cells.next, 200),
     head: head ? {n: head.n, state: clean_(head.state, 30), kind: clean_(head.kind, 20),
                   hook: clean_(head.hook, 200), caption: clean_(head.caption || cells.caption, 2200)} : null,

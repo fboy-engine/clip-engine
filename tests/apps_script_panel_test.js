@@ -128,11 +128,12 @@ const HEAD = ['#', 'Source', 'Kind', 'State', 'Moment', 'Hook', 'Caption', 'Note
 
 function boot(opts) {
   const log = [];
-  const camp = Array.from({length: 20}, () => ['', '']);
+  const camp = Array.from({length: 25}, () => ['', '']);
   const set = (r, v) => { camp[r - 1][1] = v; };
   set(3, 'Lauren Hamden GTA 6 Clipping Campaign'); set(4, opts.state || 'READY'); set(5, '#1 clip (src)'); set(6, 'cap cell');
   set(7, opts.approve === undefined ? false : opts.approve); set(13, opts.confirm === undefined ? false : opts.confirm);
   set(10, opts.linkCell || ''); set(16, opts.unlock || '');
+  set(18, opts.lock || ''); set(19, opts.heartbeat || ''); set(20, opts.igExpires || '');
   const queue = [HEAD].concat(opts.items);
   const sheets = {
     Campaign: new FakeSheet('Campaign', camp, 2, log),
@@ -281,10 +282,33 @@ test('setCell_ only writes the 3 allowed cells', () => {
   const s = b.ctx.openSheets_();
   ['approve', 'add_link', 'add_confirm'].forEach((k) => b.ctx.setCell_(s, k, true));
   assert.strictEqual(b.log.length, 3);
-  ['name', 'state', 'next', 'caption', 'timer', 'opens', 'link', 'submit', 'updated', 'unlock_utc', 'log_rows', 'nope', '__proto__', 'hasOwnProperty'].forEach((k) => {
+  ['name', 'state', 'next', 'caption', 'timer', 'opens', 'link', 'submit', 'updated', 'unlock_utc', 'log_rows', 'lock_run', 'heartbeat', 'ig_expires', 'handoff', 'loop_start', 'nope', '__proto__', 'hasOwnProperty'].forEach((k) => {
     assert.throws(() => b.ctx.setCell_(s, k, 'x'), /not allowed/, k);
   });
   assert.strictEqual(b.log.length, 3);
+});
+
+test('engine banner: offline since HH:mm (Karachi) when the heartbeat is 5 minutes old or more', () => {
+  const live = boot({items: [it(1, 'READY')], lock: 'R1', heartbeat: ISO(NOW - 299000)}).ctx.getPanel();
+  assert.strictEqual(live.engineLive, true);
+  assert.strictEqual(live.engineText, '');
+  const dead = boot({items: [it(1, 'READY')], lock: 'R1', heartbeat: ISO(NOW - 6 * MIN)}).ctx.getPanel();
+  assert.strictEqual(dead.engineLive, false);
+  assert.strictEqual(dead.engineText, 'engine offline since 16:54');   // 11:54 UTC = 16:54 Karachi
+  assert.strictEqual(boot({items: [it(1, 'READY')], heartbeat: ISO(NOW - 5 * MIN)}).ctx.getPanel().engineLive, false);
+  assert.ok(/never started/.test(boot({items: [it(1, 'READY')]}).ctx.getPanel().engineText));
+});
+
+test('token warning: quiet far away, warns from 7 days before, EXPIRED after', () => {
+  const day = (d) => new Date(NOW + d * 86400000).toISOString().slice(0, 10);
+  const w = (v) => boot({items: [it(1, 'READY')], igExpires: v}).ctx.getPanel().tokenWarning;
+  assert.strictEqual(w(''), '');
+  assert.strictEqual(w('soon'), '');
+  assert.strictEqual(w(day(8)), '');
+  assert.ok(w(day(7)).indexOf('in 7 days') >= 0, w(day(7)));
+  assert.ok(w(day(1)).indexOf('in 1 day (') >= 0, w(day(1)));
+  assert.ok(w(day(0)).indexOf('today') >= 0, w(day(0)));
+  assert.ok(w(day(-1)).indexOf('EXPIRED') >= 0, w(day(-1)));
 });
 
 if (failed) { console.log(failed + ' test(s) failed'); process.exit(1); }

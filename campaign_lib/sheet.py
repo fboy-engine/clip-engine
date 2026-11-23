@@ -15,17 +15,23 @@ CELLS = {
     "name": 3, "state": 4, "next": 5, "caption": 6, "approve": 7, "timer": 8, "opens": 9,
     "link": 10, "submit": 11, "add_link": 12, "add_confirm": 13, "updated": 14,
     "unlock_utc": 16, "log_rows": 17,
+    # engine cells (rows 18-22): written by the loop, read by the panel. Never typed by hand,
+    # except lock_run = STOP, the kill switch (no loop starts and every loop exits).
+    "lock_run": 18, "heartbeat": 19, "ig_expires": 20, "handoff": 21, "loop_start": 22,
 }
 LABELS = [
     (3, "Campaign"), (4, "State"), (5, "Next clip"), (6, "Caption"), (7, "APPROVE (tick to post)"),
     (8, "Timer"), (9, "APPROVE opens at"), (10, "Copy link (long-press)"), (11, "Reach submit"),
     (12, "Add link (paste stream link)"), (13, "Confirm add link (tick)"), (14, "Last update"),
     (16, "machine: approve unlocks (UTC)"), (17, "machine: log rows used"),
+    (18, "engine: loop run id (type STOP = stop)"), (19, "engine: heartbeat (UTC)"),
+    (20, "engine: Instagram token expires"), (21, "engine: handoff offer"), (22, "engine: loop started (UTC)"),
 ]
 QUEUE_HEAD = ["#", "Source", "Kind", "State", "Moment", "Hook", "Caption", "Note", "Posted at (UTC)",
               "Media id", "Reel link", "Submit before", "Updated"]
 LOG_HEAD = ["Time (UTC)", "Event", "Detail"]
 QUEUE_LAST_ROW = 100
+CAMPAIGN_LAST_ROW = 25  # read window of the Campaign tab (cells end at row 22)
 TWITCH_URL = re.compile(r"^https://(www\.|m\.)?twitch\.tv/(videos/\d+|[A-Za-z0-9_]+/clip/[A-Za-z0-9_-]+|[A-Za-z0-9_]+/video/\d+)/?(\?.*)?$")
 
 
@@ -71,7 +77,7 @@ class SheetIO:
     def read(self):
         data = self.c.execute("GOOGLESHEETS_BATCH_GET", {
             "spreadsheet_id": self.id, "valueRenderOption": "UNFORMATTED_VALUE",
-            "ranges": ["%s!A1:B20" % CAMPAIGN, "%s!A1:M%d" % (QUEUE, QUEUE_LAST_ROW)]})
+            "ranges": ["%s!A1:B%d" % (CAMPAIGN, CAMPAIGN_LAST_ROW), "%s!A1:M%d" % (QUEUE, QUEUE_LAST_ROW)]})
         vr = composio.find_key(data, "valueRanges")
         if not vr or len(vr) < 2:
             raise composio.ComposioError("unexpected BATCH_GET answer (no valueRanges)")
@@ -126,7 +132,7 @@ def init_payload(cfg, now, items=None):
     QUEUED) or a throwaway test sheet (items = fake clips). Returns UPDATE_VALUES_BATCH `data`."""
     if items is None:
         items = [Item(n=s["n"], source=s["url"], kind=s["kind"]) for s in cfg["sources"]]
-    camp = [[""] * 2 for _ in range(17)]
+    camp = [[""] * 2 for _ in range(22)]
     camp[0] = [cfg["sheet"]["title"], ""]
     for r, label in LABELS:
         camp[r - 1][0] = label
@@ -137,7 +143,7 @@ def init_payload(cfg, now, items=None):
     camp[CELLS["log_rows"] - 1][1] = 1
     rows = [item_row(i, now) for i in sorted(items, key=lambda x: x.n)]
     return [
-        {"range": "%s!A1:B17" % CAMPAIGN, "values": camp},
+        {"range": "%s!A1:B22" % CAMPAIGN, "values": camp},
         {"range": "%s!A1:M%d" % (QUEUE, 1 + len(rows)), "values": [QUEUE_HEAD] + rows},
         {"range": "%s!A1:C1" % LOG, "values": [LOG_HEAD]},
     ]

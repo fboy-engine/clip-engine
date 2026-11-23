@@ -47,6 +47,8 @@
 </head>
 <body>
 <div id="offline" class="banner" hidden>offline, retrying</div>
+<div id="engine" class="banner" hidden></div>
+<div id="tokenwarn" class="banner" hidden></div>
 
 <header class="card" style="margin-top:0">
   <h1 id="name">Loading...</h1>
@@ -208,6 +210,8 @@ function renderLive() {   // runs every second: only the countdown-driven bits
 
 function render(p) {
   panel = p; skew = p.serverNow - Date.now();
+  text('engine', p.engineText || ''); $('engine').hidden = !p.engineText;
+  text('tokenwarn', p.tokenWarning || ''); $('tokenwarn').hidden = !p.tokenWarning;
   text('name', p.name || 'Campaign'); text('state', p.stateText); text('updated', 'updated ' + p.updated + ' (Asia/Karachi)');
   $('nextCard').hidden = !p.head;
   if (p.head) { text('title', p.nextText); text('hook', p.head.hook ? 'Hook: ' + p.head.hook : ''); text('caption', p.head.caption); }

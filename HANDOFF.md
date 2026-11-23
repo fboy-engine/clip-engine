@@ -56,14 +56,31 @@ After each stage: commit sha to the user, ask for a cache_only=true verification
 - A1a+A1b: captions_verify.py (15c? tests, commit 15e04e9) = verify each large-v3 word against Gemini audio text and OCR of game subtitles (OCR preferred for lines that match the speech), insert words missed by VAD into speech gaps, coverage>=90% of speech seconds + zero unresolved gate, data for out/captions_check.json. hooks.phrase_hook (whole sentence/clause <=6 words, never a piece or copy of caption 1; hook no longer removes words from captions) wired in render_clip.build_ass. NOT YET WIRED into render(): Gemini audio call, OCR, rescue ASR pass, captions_check.json, grader checks (A1c).
 
 ## RESUME POINT (2026-11-23, session 2)
-Origin main was b82c3a3 when this session started. A previous session's A1c work (caption_sources.py OCR/rescue/Gemini-audio,
-captions_pass.py, render() wiring, grader check_caption_words, clip.yml tesseract step) was written in a Composio workbench
-sandbox that was reset before any push: NOTHING of it is on origin. It is being rebuilt and pushed unit by unit.
+Origin main was b82c3a3 at session start. A previous sandbox lost unpushed A1c work; it was rebuilt and pushed (below).
 Order (user): A1c -> A3 (side cam, Twitch source, any streamer) -> A2 tracking >= 85% gate -> A4 docs/reference_clip.json
 (finder tie-breaker only) -> C sharpness gate -> verification run on the first Lauren Twitch clip
 https://m.twitch.tv/laurenhamdenn/clip/GoldenSincereHamburgerHeyGuys-Zo31y1z1tLdwRScS (dry_run true, warp false, cookies false;
-cache_only cannot hit on a never-downloaded Twitch URL, so the first run needs cache_only=false, still no YouTube/Instagram call).
+cache_only cannot hit on a never-downloaded Twitch URL, so the first run needs cache_only=false; no YouTube/Instagram call).
 Rules: repo fboy-engine/clip-engine only, account github_corral-fowler, author 240231847+fboy-engine@users.noreply.github.com,
-small commits, dry_run on, permanent layout/edit rules unchanged. Sandbox files do not survive: push each unit before the next.
-Units done: A1c-1 (2e18169); A1c-2a captions_pass + grader check; A1c-2b render() wiring + clip.yml (this commit). 411 passed.
-Next unit: A3 cam/overlay detection (generic, side cam, Twitch).
+small commits, push each unit before the next, dry_run on, permanent layout/edit rules unchanged.
+
+WORKBENCH FACTS (the Composio sandbox is volatile: /home/user is wiped on reset, ~1 GB RAM, no ffmpeg, no git push auth)
+- Push path: workbench python run_composio_tool("GITHUB_COMMIT_MULTIPLE_FILES", ..., account="github_corral-fowler") with
+  author+committer 240231847+fboy-engine@users.noreply.github.com. Clone with plain git (public repo). Large bash payloads and
+  long pip installs make the connector return errors: run pip in the background (Popen) and poll.
+- cv2 must be opencv-python-headless 4.x (cv2 5 and plain opencv-python break); tesseract exists in the sandbox, ffmpeg does not
+  (cv2.VideoCapture decodes mp4 there). Memory: never hold 16 full-res float32 frames (workbench crashes).
+
+REAL TWITCH SOURCE FACTS (measured from the clip in the sandbox, yt-dlp 2026.10.26, no cookies, no WARP)
+- yt-dlp -F lists 360/480/720/1080 (1080p60) plus portrait-360/480/720/918. -f 1080 -> 1920x1080, 60 fps, 2260 frames (37.7 s),
+  6.6 MB, sha256 44a37d2ab45c40af4702770f7f2224689a94199b08fc9cb029bbeda9c3779757.
+- Layout numbers (the frames could NOT be viewed in the sandbox, so this is numeric only): Haar face stable at x~1429 y~106 w~83
+  in almost every sampled frame; a second moving face-like detection x~1780-1820 y~80-140 w~105; persistent vertical edge x=1304
+  y 0..168; persistent horizontal edge y~424 for x 1534..1920; big high-variance bright block x~15..440 y~150..440; a sporadic
+  static detection at x~122 y~597 w~75; chat-like scrolling column x~1500..1920 y~450..1080. Which of these is the face cam is
+  NOT established: A3 must decide it by rule and fail with a message when not confident.
+
+Units done: A1c-1 caption_sources (2e18169); A1c-2a captions_pass + grader check_caption_words (2e8ff73); A1c-2b render() wiring +
+clip.yml tesseract/GEMINI env (eeb6063). 411 tests passed, 6 skipped.
+Next unit: A3-1 clip_engine/camfind.py (generic cam/overlay detector, confidence gate), then A3-2 wire into render(), A3-3 Twitch
+download in cli/clip.yml.

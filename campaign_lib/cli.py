@@ -28,6 +28,10 @@ def _io(cfg, a):
 
 
 def cmd_probe(cfg, a):
+    status = composio.diagnose()
+    if status != 200:
+        print("probe STOPPED: documented request not accepted (HTTP %s); no fallback attempted" % status)
+        return 1
     io = _io(cfg, a)
     snap = io.read()
     print("account: ACTIVE googlesheets (discovered), read OK")

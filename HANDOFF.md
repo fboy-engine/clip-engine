@@ -65,5 +65,5 @@ https://m.twitch.tv/laurenhamdenn/clip/GoldenSincereHamburgerHeyGuys-Zo31y1z1tLd
 cache_only cannot hit on a never-downloaded Twitch URL, so the first run needs cache_only=false, still no YouTube/Instagram call).
 Rules: repo fboy-engine/clip-engine only, account github_corral-fowler, author 240231847+fboy-engine@users.noreply.github.com,
 small commits, dry_run on, permanent layout/edit rules unchanged. Sandbox files do not survive: push each unit before the next.
-Units done: A1c-1 caption_sources (2e18169); A1c-2a captions_pass.py + grader check_caption_words (cov >= 90%, 0 unresolved) + tests (411 passed).
-Next unit: A1c-2b render() wiring + clip.yml tesseract/GEMINI env (code already written, pushing).
+Units done: A1c-1 (2e18169); A1c-2a captions_pass + grader check; A1c-2b render() wiring + clip.yml (this commit). 411 passed.
+Next unit: A3 cam/overlay detection (generic, side cam, Twitch).

@@ -268,6 +268,14 @@ jobs:
         if: ${{ inputs.render || inputs.cam_bench }}
         timeout-minutes: 2
         run: python -m clip_engine.cli check-cv
+      - name: Install tesseract (OCR of the game's subtitles for the caption check; best effort)
+        if: ${{ inputs.render }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          timeout 90 sudo apt-get update -qq || true
+          timeout 180 sudo apt-get install -y -qq --no-install-recommends tesseract-ocr tesseract-ocr-eng || echo "tesseract install failed: OCR will be reported as unavailable"
+          command -v tesseract && tesseract --version 2>&1 | head -n1 || true
       - name: Cache super-resolution models (SHA-256 pinned in code)
         if: ${{ inputs.render || inputs.cam_bench }}
         uses: actions/cache@v4
@@ -299,6 +307,7 @@ jobs:
         timeout-minutes: 35
         env:
           HF_HUB_DISABLE_PROGRESS_BARS: "1"
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           RSTART: ${{ inputs.render_start }}
           REND: ${{ inputs.render_end }}
           HOOK: ${{ inputs.hook_text }}
@@ -328,6 +337,7 @@ jobs:
             out/cam_compare.png
             out/grade.json
             out/cam_diag.json
+            out/captions_check.json
             out/source_contact.jpg
             out/source_frame_*.jpg
             out/render_error.json

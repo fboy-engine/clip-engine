@@ -15,7 +15,7 @@ from fractions import Fraction
 
 import numpy as np
 
-from . import (asr_fix, balance, caption_lane, captions, cam_enhance, cam_layout, cam_sr, config, download, exclusion, hooks,
+from . import (asr_fix, balance, caption_lane, caption_sources, captions, captions_pass, cam_enhance, cam_layout, cam_sr, config, download, exclusion, hooks,
                layout, select_clean, srcinfo, subject, track, transcribe, trim, vision)
 from .cropplan import punch_curve, smooth
 
@@ -487,6 +487,24 @@ def build_ass(cw, hook_text, use_cam, rect):
     return ass, lane, (hook, hook_src, hook_match)
 
 
+def caption_check(media, s_f, dur, cw_unmasked, src_w, src_h, avoid_px, model, cache_dir, log=print):
+    """Rescue ASR + Gemini audio text + OCR of the game's subtitles on the FINAL cut -> (verified words, check)."""
+    box = []
+
+    def model_fn():
+        from faster_whisper import WhisperModel
+        from faster_whisper.utils import download_model
+        path = download_model(model, cache_dir=cache_dir)
+        box.append(WhisperModel(path, device="cpu", compute_type="int8", cpu_threads=os.cpu_count() or 2))
+        return caption_sources.whisper_fn(box[0])
+    try:
+        return captions_pass.run(media, s_f, dur, cw_unmasked, src_w, src_h, model_fn=model_fn, avoid_px=avoid_px,
+                                 key=os.environ.get("GEMINI_API_KEY"), log=log)
+    finally:
+        box.clear()
+        gc.collect()
+
+
 def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=None, words=None,
            model="large-v3", cache_dir=None, preset=config.PRESET, log=print, payoff="", vod_id=""):
     """Returns the render.json dict (also written to out_dir). Raises on anything it cannot do honestly."""
@@ -614,6 +632,25 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
 
     notes[:0] = open_notes
 
+    # captions: second sources + rescue pass on the FINAL cut; the ASS is rebuilt from the verified words
+    t = time.monotonic()
+    avoid = [tuple(z) for z in zones.values()] + ([layout.region_px(rect, src_w, src_h)] if use_cam else [])
+    cw_u = [w for w in asr_fix.to_clip_time(words, s_f) if w["s"] < dur]
+    for w in cw_u:
+        w["e"] = min(w["e"], dur)
+    final_u, cap_check = caption_check(media, s_f, dur, cw_u, src_w, src_h, avoid, model, cache_dir, log)
+    captions_pass.write_json(cap_check, out_dir)
+    timings["captions_check_sec"] = round(time.monotonic() - t, 1)
+    if not cap_check["gate"]["ok"]:
+        raise ValueError("captions check failed (out/captions_check.json has every word): "
+                         + "; ".join(cap_check["gate"]["reasons"]))
+    cw = asr_fix.mask_profanity([w for w in final_u if w["s"] < dur])
+    ass, lane, (hook, hook_src, hook_match) = build_ass(cw, hook_text, use_cam, rect)
+    with open(ass_path, "w") as f:
+        f.write(ass)
+    log(f"captions verified: {len(cw)} words ({cap_check['counts']['corrected']} corrected, "
+        f"{cap_check['counts']['inserted']} inserted), hook {hook!r}")
+
     # audio: measure, then normalise to -14 LUFS (stream audio only)
     t = time.monotonic()
     p = subprocess.run(loudnorm_measure_cmd(media, s_f, dur, END_FADE), capture_output=True, text=True)
@@ -667,7 +704,8 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
          "cam_scale": {"upscale": cam_info.get("upscale"), "box_px": cam_info.get("box_px"),
                        "chain": cam_quality["chain"] if cam_quality else "none (no cam block)"}, "cam_quality": cam_quality, "loudnorm_input": ln, "audio_final": audio_final, "timings": timings,
          "encode": {"codec": "libx264", "crf": config.CRF, "preset": preset},
-         "grade_inputs": {"cam_diag": diag, "audio_inputs": 1, "audio_filters": list(AUDIO_FILTERS), "trim": trim_info,
+         "captions_check": captions_pass.summary(cap_check),
+         "grade_inputs": {"captions_check": captions_pass.summary(cap_check), "cam_diag": diag, "audio_inputs": 1, "audio_filters": list(AUDIO_FILTERS), "trim": trim_info,
                           "hook": {"text": hook, "source": hook_src, "match": hook_match}, "cam_quality": cam_quality, **stats}}
     with open(os.path.join(out_dir, "render.json"), "w") as f:
         json.dump(r, f, indent=1)

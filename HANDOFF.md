@@ -117,3 +117,8 @@ A3-2 PLAN (not started in code; origin main = b78e83d + this handoff commit):
 - Workbench: /home/user is wiped on reset; needs pip opencv-python-headless<5, yt-dlp (python -m yt_dlp); push via GITHUB_COMMIT_MULTIPLE_FILES.
 
 SESSION 3 (2026-11-23): A3-0 DONE 494f162: tests/test_camfind.py is stdlib unittest only; unit-tests run 45125071415 GREEN on that commit. Workflow file is .github/workflows/clip.yml (there is no cli/clip.yml). Rule: a unit is done only when the full unit-tests run is green on its commit. NEXT: A3-2 (wire camfind into render_clip.render()).
+
+A3-2/A3-3 DONE (session 3), unit-tests GREEN on each: 9c867c3 (camresolve.py + layout.cam_boxes(full=True)), 4982b03 (render() and cam-bench use camresolve; rendered gate after the encode refuses the clip; cam_find in render.json/layout.json/summary_md), acb2e01 (download.fetch_twitch_clip: anonymous, whole clip, -f 1080/720/480/360; clip.yml skips WARP/cookies for twitch.tv URLs and uploads cam_find.jpg/json).
+Wiring facts: camresolve.resolve() runs only when no zones/cam_rect/corner is given (auto); a given cam_rect, known VOD zones or a named corner keep the legacy path (cam_find.jpg is still drawn). Generic cam: ONE constant face track from camfind, region = detected rect minus 3 px on border-line sides, window = biggest 2:1 box (Lauren 613x306 -> 1.76x). cam_bench uses the same decision.
+RISK to check in the verification run: Real-ESRGAN time on the bigger Lauren ROI (~625x318 px, about 2.5 s/frame est.); plan_cam_fps needs <= 720 s, so the clip must be about <= 27 s at the 8 fps tier (MIN_LEN is 25 s). Chosen window render_start 2, render_end 29.
+NEXT: verification run on the Lauren Twitch clip (cache_only false, dry_run true, warp false, cookies false), then the report.

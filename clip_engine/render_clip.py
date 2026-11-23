@@ -25,6 +25,7 @@ FADE = 0.012
 END_FADE = 0.15       # short fade out at the end (0.1-0.2 s is fine; no long fade to silence)
 MOTION_FPS = 20
 PICK_FPS = 10         # start picking samples the shown strip at the grade's rate
+TRACK_GATE_PCT = 85.0  # sampled frames with the subject fully inside the gameplay crop; below it the render refuses the clip
 OPEN_TRIES = 3        # re-plan the cut at most this many times when the shown opening is frozen
 NOMINAL_CAM = layout.NOMINAL_CAM
 GLOSSARY = {"lucia": "Lucia"}
@@ -68,6 +69,27 @@ def smooth_series(xs, sigma):
     r = int(3 * sigma)
     k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma) ** 2)
     return np.convolve(np.pad(xs, r, mode="edge"), k / k.sum(), mode="valid")
+
+
+def tracking_masks(rect, zones, src_w, src_h):
+    """Fraction rects the subject tracker ignores: the cam and every overlay zone (cam, chat, side panel, counters)."""
+    m = [tuple(float(v) for v in rect)] if rect else []
+    for z in (zones or {}).values():
+        m.append((z[0] / src_w, z[1] / src_h, z[2] / src_w, z[3] / src_h))
+    return m
+
+
+def tracking_report(sub, sub_plan, times, fps):
+    """out/tracking.json content: the gate number, where each sample's subject came from, the static detections dropped."""
+    src = sub.get("source") or []
+    n = len(src) or 1
+    return {"gate_pct": TRACK_GATE_PCT, "in_panel_pct": sub_plan["in_panel_pct"], "tracked_pct": sub_plan["tracked_pct"],
+            "inside_pct_of_tracked": sub_plan["inside_pct"], "samples": sub_plan["samples"], "sample_fps": fps,
+            "sources_pct": {k: round(100.0 * src.count(k) / n, 1) for k in ("person", "motion", "none")},
+            "static_dropped": [c for c in sub.get("static", []) if c.get("static")],
+            "clusters_seen": sub.get("static", []), "cut_times": sub_plan["cut_times"],
+            "per_sample": [{"t": round(float(t), 2), "source": s, "cx": round(float(c), 3)}
+                           for t, s, c in zip(times, src, sub["cx"])]}
 
 
 def panel_bounds(rect, zones, src_w, pw):
@@ -601,9 +623,9 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
             f"captions {'on the seam y=' + str(lane['seam_y']) if lane['seam_y'] else 'bottom lane'}")
 
         # subject track -> smoothed crop path for the gameplay panel
-        dets = [vision.detect_people(f, rect) for f in smp["small"]]
-        motion = track.centroid_x(vision.small_gray(smp["small"]), rect)
-        sub = subject.build(dets, motion)
+        tmasks = tracking_masks(rect, zones, src_w, src_h)
+        dets = [vision.detect_people(f, tmasks) for f in smp["small"]]
+        sub = subject.build_tracked(dets, vision.small_gray(smp["small"], 240, 135), tmasks)
         cxs = smooth(sub["cx"], alpha=0.4, deadband=0.03)
         pts = [(round(tt, 3), round(max(bounds[0], min(c * src_w - pw / 2, bounds[1])), 1))
                for tt, c in zip(smp["times"], cxs)] or [(0.0, round((bounds[0] + bounds[1]) / 2, 1))]
@@ -623,6 +645,16 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         sub_plan = subject.inside_stats(sub["box"], smp["times"], [bxs[j][0] for j in idx],
                                         [bxs[j][2] for j in idx], src_w)
         stats["subject"] = sub_plan
+        trk = tracking_report(sub, sub_plan, smp["times"], vision.SAMPLE_FPS)
+        sub_plan["sources_pct"] = trk["sources_pct"]
+        with open(os.path.join(out_dir, "tracking.json"), "w") as f:
+            json.dump(trk, f, indent=1)
+        log(f"tracking: subject inside the panel in {sub_plan['in_panel_pct']}% of {sub_plan['samples']} sampled frames "
+            f"(gate {TRACK_GATE_PCT:g}%); sources {trk['sources_pct']}; static detections dropped: {len(trk['static_dropped'])}")
+        if sub_plan["in_panel_pct"] < TRACK_GATE_PCT:
+            raise ValueError(f"tracking gate failed: subject inside the panel in {sub_plan['in_panel_pct']}% of sampled frames "
+                             f"(needs >= {TRACK_GATE_PCT:g}%); sources {trk['sources_pct']}; cut at {sub_plan['cut_times'][:12]} "
+                             f"(out/tracking.json has every sample)")
 
         cbx = None
         cam_info = {"found": use_cam, "mode": mode, "search": cam_search}

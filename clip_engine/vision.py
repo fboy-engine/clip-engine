@@ -265,18 +265,27 @@ def choose_cam(faces, n, src_w, src_h, min_hits=MIN_FACE_HITS, max_spread=0.2):
 _HOG = None
 
 
+def mask_list(mask):
+    """None, one (x0, y0, x1, y1) fraction rect, or a list of them -> list of rects."""
+    if not mask:
+        return []
+    return [tuple(mask)] if isinstance(mask[0], (int, float, np.integer, np.floating)) else [tuple(m) for m in mask]
+
+
 def detect_people(img, mask=None, min_score=0.4):
     """HOG people detector on a small BGR frame. mask = (x0, y0, x1, y1) fractions to blank out
-    (the facecam). Returns normalised boxes (x0, y0, x1, y1, score)."""
+    (the facecam), or a list of such rects (cam, chat, side panel). Returns normalised boxes (x0, y0, x1, y1, score)."""
     import cv2
     global _HOG
     if _HOG is None:
         _HOG = load_people_detector(cv2)
     h, w = img.shape[:2]
     im = img
-    if mask:
+    masks = mask_list(mask)
+    if masks:
         im = img.copy()
-        im[int(mask[1] * h):int(np.ceil(mask[3] * h)), int(mask[0] * w):int(np.ceil(mask[2] * w))] = 127
+        for m in masks:
+            im[int(m[1] * h):int(np.ceil(m[3] * h)), int(m[0] * w):int(np.ceil(m[2] * w))] = 127
     rects, weights = _HOG.detectMultiScale(im, winStride=(8, 8), padding=(8, 8), scale=1.05)
     out = []
     for (x, y, bw, bh), s in zip(rects, np.ravel(weights)):

@@ -342,6 +342,7 @@ jobs:
             out/cam_find.jpg
             out/cam_find.json
             out/captions_check.json
+            out/tracking.json
             out/source_contact.jpg
             out/source_frame_*.jpg
             out/render_error.json

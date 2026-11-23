@@ -69,7 +69,25 @@ def cmd_info(a):
     return 0
 
 
+def cmd_fetch_twitch(a):
+    """Twitch clip: the whole clip, anonymous (no cookies, no proxy), start/end are not used."""
+    try:
+        path = download.fetch_twitch_clip(a.url, a.out)
+    except download.DownloadFailed as e:
+        print(f"FAIL: {e}")
+        return 1
+    summary = download.probe_media(path)
+    summary["player_client"] = "twitch clip (anonymous)"
+    summary["via_proxy"] = False
+    with open(os.path.join(a.out, "probe.json"), "w") as f:
+        json.dump(summary, f, indent=1)
+    print("PASS download: " + json.dumps(summary))
+    return 0
+
+
 def cmd_fetch(a):
+    if download.is_twitch(a.url):
+        return cmd_fetch_twitch(a)
     # live streams use the same path: the section is cut from the DVR window
     if not a.end > a.start >= 0:
         print("FAIL: need end_sec > start_sec >= 0")

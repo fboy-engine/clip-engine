@@ -129,6 +129,34 @@ def fetch_window(url, start, end, out_dir, cookies=None, proxy=None,
     raise DownloadFailed(f"yt-dlp failed after {MAX_ATTEMPTS} attempts (last rc={last})")
 
 
+TWITCH_RE = re.compile(r"^https?://(?:[a-z0-9-]+\.)?twitch\.tv/", re.I)
+TWITCH_FORMATS = "1080/720/480/360"      # yt-dlp format ids of a Twitch clip (the list also has portrait-* ids: never picked)
+
+
+def is_twitch(url):
+    return bool(TWITCH_RE.match((url or "").strip()))
+
+
+def fetch_twitch_clip(url, out_dir, runner=run_stream):
+    """A Twitch clip is one short mp4 that yt-dlp reads anonymously: NO cookies, NO proxy/WARP, no player-client fallback,
+    no section cut (start/end are not used). Best of 1080/720/480/360 (never a portrait format). Two attempts at most.
+    Returns the path of out_dir/source.mp4."""
+    os.makedirs(out_dir, exist_ok=True)
+    last, text = None, ""
+    for _ in range(2):
+        cmd = common_args() + ["-f", TWITCH_FORMATS, "--merge-output-format", "mp4", "--progress-delta", "15", "--newline",
+                               "-o", os.path.join(out_dir, "source.%(ext)s"), url]
+        res = runner(cmd, 600)
+        rc, text = res if isinstance(res, tuple) else (res, "")
+        files = sorted(glob.glob(os.path.join(out_dir, "source.mp4")))
+        if rc == 0 and files:
+            return files[0]
+        last = rc
+        print(f"Twitch download attempt failed (rc={rc})", flush=True)
+    raise DownloadFailed(f"yt-dlp could not download the Twitch clip after 2 attempts (last rc={last}); "
+                         f"last output: {(text or '')[-400:]}")
+
+
 def probe_media(path):
     out = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json",
                           "-show_streams", "-show_format", path],

@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: YouTube stream URL (ended stream first)
+        description: YouTube stream URL (ended stream first) or a Twitch clip URL (whole clip, anonymous, no cookies, no WARP)
         required: true
       campaign:
         description: Campaign label
@@ -152,13 +152,13 @@ jobs:
           echo "CACHE MISS for ${{ steps.sk.outputs.key }}; cache_only=true so nothing is downloaded"
           exit 1
       - name: WARP (egress check fails the job if IP did not change)
-        if: ${{ inputs.warp && steps.srcc.outputs.cache-hit != 'true' }}
+        if: ${{ inputs.warp && steps.srcc.outputs.cache-hit != 'true' && !contains(inputs.url, 'twitch.tv') }}
         timeout-minutes: 4
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/warp_up.sh
       - name: Cookies (secret to temp file, names only in logs)
-        if: ${{ inputs.cookies && steps.srcc.outputs.cache-hit != 'true' }}
+        if: ${{ inputs.cookies && steps.srcc.outputs.cache-hit != 'true' && !contains(inputs.url, 'twitch.tv') }}
         env:
           YT_COOKIES: ${{ secrets.YT_COOKIES }}
         run: |
@@ -300,6 +300,8 @@ jobs:
             out/cam_bench.json
             out/cam_bench.md
             out/cam_compare.png
+            out/cam_find.jpg
+            out/cam_find.json
           retention-days: 14
           if-no-files-found: warn
       - name: Render clip (cam on top, subject-tracked gameplay panel, captions, hook, -14 LUFS) and grade it
@@ -337,6 +339,8 @@ jobs:
             out/cam_compare.png
             out/grade.json
             out/cam_diag.json
+            out/cam_find.jpg
+            out/cam_find.json
             out/captions_check.json
             out/source_contact.jpg
             out/source_frame_*.jpg

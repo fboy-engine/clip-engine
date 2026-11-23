@@ -132,3 +132,55 @@ def test_real_twitch_clip():
     x0, y0, x1, y1 = r["cam"]["rect_px"]
     assert abs(x0 - 1304) <= 12 and y0 == 0 and x1 == 1920 and abs(y1 - 424) <= 12
     assert r["confidence"] >= 0.9 and r["chat"]["side"] == "right"
+
+
+# ---- the gate on the rendered output ------------------------------------------------------------
+
+def _source():
+    rng = np.random.default_rng(11)
+    g = cv2.resize(rng.random((27, 48)).astype(np.float32), (1920, 1080), interpolation=cv2.INTER_CUBIC)
+    g += 0.25 * cv2.resize(rng.random((108, 192)).astype(np.float32), (1920, 1080), interpolation=cv2.INTER_CUBIC)
+    return (255 * (g - g.min()) / (g.max() - g.min())).astype(np.uint8)
+
+
+def _output(src, panel_x, cam_box=(1304, 24, 616, 308), gain=0.8, bias=20):
+    out = np.zeros((1920, 1080), np.uint8)
+    x, y, w, h = cam_box
+    out[:540] = cv2.resize(src[y:y + h, x:x + w], (1080, 540), interpolation=cv2.INTER_CUBIC)
+    out[540:] = cv2.resize(src[0:1080, panel_x:panel_x + 845], (1080, 1380), interpolation=cv2.INTER_CUBIC)
+    return np.clip(out.astype(np.float32) * gain + bias, 0, 255).astype(np.uint8)       # graded: the match must not care
+
+
+ZONES = {"cam": (1304.0, 0.0, 1920.0, 424.0), "chat": (1728.0, 424.0, 1920.0, 1074.0), "side_panel": (1304.0, 0.0, 1920.0, 1080.0)}
+PSC = list(np.arange(1.25, 1.46, 0.01))
+CSC = [1.65, 1.70, 1.75, 1.80, 1.85]
+
+
+def test_gate_passes_a_clean_render_and_traces_both_blocks():
+    s = _source()
+    g = cf.gate_frames([(s, _output(s, 300))] * 2, ZONES, (1304, 0, 1920, 424), PSC, CSC)
+    assert g["ok"], g["reasons"]
+    assert abs(g["frames"][0]["panel"]["x_range"][0] - 300) <= 8 and g["frames"][0]["cam"]["inside_cam_rect"]
+
+
+def test_gate_fails_when_the_panel_shows_the_cam_column():
+    s = _source()
+    g = cf.gate_frames([(s, _output(s, 1000))], ZONES, (1304, 0, 1920, 424), PSC, CSC)      # panel covers x 1000-1845
+    assert not g["ok"] and "overlaps" in " ".join(g["reasons"]) and "cam" in " ".join(g["reasons"])
+
+
+def test_gate_fails_when_the_output_cannot_be_traced():
+    s = _source()
+    junk = np.random.default_rng(2).integers(0, 255, (1920, 1080)).astype(np.uint8)
+    g = cf.gate_frames([(s, junk)], ZONES, (1304, 0, 1920, 424), PSC, CSC)
+    assert not g["ok"] and "could not be traced" in " ".join(g["reasons"])
+
+
+def test_gate_fails_when_the_cam_block_comes_from_the_game():
+    s = _source()
+    g = cf.gate_frames([(s, _output(s, 300, cam_box=(100, 500, 616, 308)))], ZONES, (1304, 0, 1920, 424), PSC, CSC)
+    assert not g["ok"] and "outside the cam rectangle" in " ".join(g["reasons"])
+
+
+def test_gate_with_no_frames_is_not_a_pass():
+    assert not cf.gate_frames([], ZONES, None, PSC, CSC)["ok"]

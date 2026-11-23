@@ -92,5 +92,9 @@ chat (periodicity 0.19) = gameplay. The frames could not be VIEWED in the sandbo
 Rule: stable face track + persistent straight borders (or frame edge); raises CamNotConfident (clear reasons) without a face track, without
 any border, when the rectangle is implausible, or when two rectangles tie. Known gaps: floating counters/timers outside the cam/chat column
 are not detected; a cam with no border needs cam_rect.
-Next: A3-1b rendered-output gate (camfind.rendered_gate), A3-2 wiring in render() (+ layout.cam_boxes full 2:1 window), A3-3 cli/clip.yml
-Twitch download (no cookies, no WARP) + verification run.
+A3-1b DONE: camfind.rendered_gate / gate_frames / locate_patch = the RENDERED-output gate: k frames of the finished clip are traced back
+into the source by normalised cross-correlation (1/4 res, grading-invariant); the gameplay panel must come from source x clear of every zone,
+the cam block from inside the cam rectangle; an untraceable frame fails (no evidence is not a pass). 14 camfind tests (+1 real-clip skip).
+Next: A3-2 wiring in render() (generic detect when auto + no known zones; cam_rect still overrides; layout.cam_boxes full 2:1 window for a
+detected cam; gate after the encode, written to render.json/layout.json), then A3-3 cli/clip.yml Twitch download (no cookies, no WARP) +
+verification run (cache_only false, dry_run true, warp false, cookies false).

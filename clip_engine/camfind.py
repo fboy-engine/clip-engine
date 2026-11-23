@@ -405,3 +405,88 @@ def detect_media(media, start, dur, w_src, h_src, n=N_SAMPLES, face_fn=None, deb
         col = grab(media, [times[len(times) // 2]], w_src, h_src, color=True)
         draw_debug(col[0] if col else np.dstack([gray[len(gray) // 2]] * 3), res, debug_jpg)
     return res
+
+
+# ---- the gate on the RENDERED output ----------------------------------------------------------------
+
+PANEL_Y0 = 540                     # the gameplay panel starts under the 1080x540 cam block
+LOC_MIN_SCORE = 0.5                # normalised correlation needed to say "this output patch came from there"
+LOC_TOL_PX = 12                    # source px of slack on a located box (matching runs at 1/4 resolution)
+
+
+def locate_patch(src_gray, patch, scales, f=0.25):
+    """Where in the SOURCE frame did an output patch come from? The patch was the source scaled up by one of `scales`; it is shrunk
+    to the matching size and found by normalised cross-correlation on a 1/4 resolution copy (invariant to brightness/contrast grading).
+    -> {score, scale, x, y, w, h} in source px of the best match (w, h = the patch's footprint in the source)."""
+    cv2 = _cv2()
+    small = cv2.resize(src_gray, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    best = {"score": -1.0}
+    ph, pw = patch.shape[:2]
+    for s in scales:
+        tw, th = int(round(pw * f / s)), int(round(ph * f / s))
+        if tw < 8 or th < 8 or tw > small.shape[1] or th > small.shape[0]:
+            continue
+        t = cv2.resize(patch, (tw, th), interpolation=cv2.INTER_AREA)
+        if float(t.std()) < 2.0:           # a flat patch matches everything: no evidence
+            continue
+        res = cv2.matchTemplate(small, t, cv2.TM_CCOEFF_NORMED)
+        _, mx, _, loc = cv2.minMaxLoc(res)
+        if mx > best["score"]:
+            best = {"score": round(float(mx), 3), "scale": round(float(s), 3), "x": loc[0] / f, "y": loc[1] / f,
+                    "w": pw / s, "h": ph / s}
+    return best
+
+
+def _overlap_px(a, b):
+    return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+
+
+def gate_frames(pairs, zones, cam_rect, panel_scales, cam_scales, min_score=LOC_MIN_SCORE, tol=LOC_TOL_PX):
+    """pairs: [(source gray frame, output gray frame 1080x1920)]. Every output frame is traced back into the source:
+    the gameplay panel must come from a place clear of every overlay zone, the cam block from inside the cam rectangle.
+    -> {ok, reasons, frames: [...]} (a frame that cannot be traced counts as a failure: no evidence is not a pass)."""
+    rows, reasons = [], []
+    for k, (src, out) in enumerate(pairs):
+        h_out = out.shape[0]
+        panel = out[PANEL_Y0 + 160: h_out - 380]                # middle band: clear of the seam captions and the bottom lane
+        off = 160.0                                              # rows of the panel above the matched band
+        p = locate_patch(src, panel, panel_scales)
+        row = {"frame": k, "panel": {kk: (round(v, 1) if isinstance(v, float) else v) for kk, v in p.items()}}
+        if p["score"] < min_score:
+            reasons.append(f"frame {k}: the gameplay panel could not be traced back into the source (score {p['score']} < {min_score})")
+        else:
+            top = p["y"] - off / p["scale"]
+            box = (p["x"], top, p["x"] + p["w"], top + (h_out - PANEL_Y0) / p["scale"])
+            shrunk = (box[0] + tol, box[1] + tol, box[2] - tol, box[3] - tol)
+            hits = sorted(n for n, z in zones.items() if _overlap_px(shrunk, z) > 0)
+            row["panel"]["x_range"] = [round(box[0]), round(box[2])]
+            row["panel"]["zone_hits"] = hits
+            if hits:
+                reasons.append(f"frame {k}: the rendered gameplay panel shows source x {round(box[0])}-{round(box[2])}, "
+                               f"which overlaps the {', '.join(hits)} zone")
+        if cam_rect:
+            c = locate_patch(src, out[:PANEL_Y0], cam_scales)
+            row["cam"] = {kk: (round(v, 1) if isinstance(v, float) else v) for kk, v in c.items()}
+            if c["score"] < min_score * 0.7:                   # the enhanced cam block matches a little less sharply
+                reasons.append(f"frame {k}: the cam block could not be traced back into the source (score {c['score']})")
+            else:
+                inside = (c["x"] >= cam_rect[0] - tol and c["y"] >= cam_rect[1] - tol and c["x"] + c["w"] <= cam_rect[2] + tol
+                          and c["y"] + c["h"] <= cam_rect[3] + tol)
+                row["cam"]["inside_cam_rect"] = bool(inside)
+                if not inside:
+                    reasons.append(f"frame {k}: the cam block comes from source box {[round(c['x']), round(c['y']), round(c['x'] + c['w']), round(c['y'] + c['h'])]}, outside the cam rectangle")
+        rows.append(row)
+    return {"ok": bool(rows) and not reasons, "reasons": reasons if rows else ["no frames to check"], "frames": rows}
+
+
+def rendered_gate(media, clip_path, start, dur, w_src, h_src, zones, cam_rect, panel_scales, cam_scales, k=5):
+    """Decode k frames of the FINISHED clip and the same moments of the source, then gate_frames() them."""
+    us = [round(dur * (i + 1) / (k + 1), 3) for i in range(k)]
+    out = grab(clip_path, us, 1080, 1920)
+    src = grab(media, [round(start + u, 3) for u in us], w_src, h_src)
+    n = min(len(out), len(src))
+    res = gate_frames(list(zip(src[:n], out[:n])), zones, cam_rect, panel_scales, cam_scales)
+    res["times"] = us[:n]
+    if n < k:
+        res["ok"], res["reasons"] = False, res["reasons"] + [f"only {n} of {k} frames could be decoded from the clip"]
+    return res

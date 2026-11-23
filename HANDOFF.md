@@ -98,3 +98,20 @@ the cam block from inside the cam rectangle; an untraceable frame fails (no evid
 Next: A3-2 wiring in render() (generic detect when auto + no known zones; cam_rect still overrides; layout.cam_boxes full 2:1 window for a
 detected cam; gate after the encode, written to render.json/layout.json), then A3-3 cli/clip.yml Twitch download (no cookies, no WARP) +
 verification run (cache_only false, dry_run true, warp false, cookies false).
+
+A3-2 PLAN (not started in code; origin main = b78e83d + this handoff commit):
+- render_clip.render(): when cam_corner is auto/None, no cam_rect and no known VOD zones -> camfind.detect_media(media, start, span, src_w,
+  src_h, debug_jpg=out/cam_find.jpg); on CamNotConfident write out/cam_find.json (reasons + evidence) and re-raise (no guess, no fallback).
+  Confident -> cam_rect = res["cam"]["rect_frac"], zones = res["zones"] (cam, chat, side_panel; px boxes, same shape as exclusion zones),
+  generic_cam = True. A user cam_rect or a corner name still overrides (legacy path). seeded_cam() then verifies the face as before.
+- layout.cam_boxes(path, region, full=False): add full=True -> w = min(region w, 2 * region h) (biggest 2:1 window, face at FACE_ROW, never
+  stretched; Lauren cam 616x424 -> 616x308, upscale 1.75 through the existing cam chain; downscale only if >= 1080 wide). Call with
+  full=generic_cam at render_clip.py ~line 604.
+- Rendered gate: after the encode, camfind.rendered_gate(media, out_path, s_f, dur, src_w, src_h, zones or {"cam": rect_px}, rect_px,
+  panel_scales = linspace(min,max of OUT_W/bxs[i][2] +-3%, 9), cam_scales = OUT_W/cbx[0][2] * (0.94..1.06)); store in render.json,
+  grade_inputs and layout.json ("rendered_gate", "cam_find"); raise ValueError after those files are written when not ok.
+  Watch: burnt-in hook/captions inside the matched band (panel rows 700-1540) may lower the score; tune LOC_MIN_SCORE only with numbers.
+- A3-3: cli/clip.yml Twitch download branch (yt-dlp -f 1080, no cookies, no WARP); verification run inputs: url
+  https://m.twitch.tv/laurenhamdenn/clip/GoldenSincereHamburgerHeyGuys-Zo31y1z1tLdwRScS, cache_only false, dry_run true, warp false,
+  cookies false; report cam rect on a frame (out/cam_find.jpg), 3 review frames, layout.json, clip sha256.
+- Workbench: /home/user is wiped on reset; needs pip opencv-python-headless<5, yt-dlp (python -m yt_dlp); push via GITHUB_COMMIT_MULTIPLE_FILES.

@@ -115,3 +115,5 @@ A3-2 PLAN (not started in code; origin main = b78e83d + this handoff commit):
   https://m.twitch.tv/laurenhamdenn/clip/GoldenSincereHamburgerHeyGuys-Zo31y1z1tLdwRScS, cache_only false, dry_run true, warp false,
   cookies false; report cam rect on a frame (out/cam_find.jpg), 3 review frames, layout.json, clip sha256.
 - Workbench: /home/user is wiped on reset; needs pip opencv-python-headless<5, yt-dlp (python -m yt_dlp); push via GITHUB_COMMIT_MULTIPLE_FILES.
+
+SESSION 3 (2026-11-23): A3-0 DONE 494f162: tests/test_camfind.py is stdlib unittest only; unit-tests run 45125071415 GREEN on that commit. Workflow file is .github/workflows/clip.yml (there is no cli/clip.yml). Rule: a unit is done only when the full unit-tests run is green on its commit. NEXT: A3-2 (wire camfind into render_clip.render()).

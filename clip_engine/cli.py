@@ -206,6 +206,19 @@ def cmd_cam_bench(a):
         _, md = cam_bench.run(a.media, a.start, a.end, a.out, vod_id=a.vod_id, url=a.url if a.formats else "",
                               cache_dir=a.cache_dir or None, cookies=cookies, proxy=proxy,
                                   candidates=tuple(c for c in a.candidates.split(",") if c) or cam_sr.CANDIDATES)
+    except cam_bench.NotEnoughCrops as e:                # not a render blocker: warn, skip the benchmark gate, the render goes on
+        warn = f"WARNING cam-bench skipped: {str(e)[:500]}. The render uses the default cam chain; its own gates still apply."
+        print(warn)
+        os.makedirs(a.out, exist_ok=True)
+        with open(os.path.join(a.out, "cam_bench.json"), "w") as f:
+            json.dump({"skipped": True, "warning": warn, "inputs": inputs}, f, indent=1)
+        with open(os.path.join(a.out, "cam_bench.md"), "w") as f:
+            f.write("### Cam benchmark SKIPPED\n" + warn + "\n")
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary:
+            with open(summary, "a") as f:
+                f.write("### Cam benchmark SKIPPED (warning, render continues)\n```\n" + warn + "\n```\n")
+        return 0
     except Exception as e:
         msg = f"FAIL cam-bench: {type(e).__name__}: {str(e)[:600]}"
         print(msg)

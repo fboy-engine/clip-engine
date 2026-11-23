@@ -15,6 +15,32 @@ from . import cam_enhance, cam_sr, camresolve, download, exclusion, layout, qual
 
 SWS = "lanczos+accurate_rnd+full_chroma_int"
 N_FRAMES = 8
+FRAME_STEP_SEC = 0.5        # about one sample frame per 0.5 s of the window ...
+MIN_FRAMES, MAX_FRAMES = 8, 24   # ... but never fewer than 8 nor more than 24
+SHORT_SOURCE_SEC = 40       # windows shorter than this need fewer real crops
+MIN_CROPS_SHORT, MIN_CROPS_LONG = 6, 8
+
+
+class NotEnoughCrops(RuntimeError):
+    """The source gave too few real crops to benchmark. Not a render blocker: the bench is skipped with a warning."""
+
+
+def sample_count(dur):
+    """Sample frames for a window of dur seconds: about 1 per 0.5 s, at least 8, at most 24."""
+    return int(max(MIN_FRAMES, min(MAX_FRAMES, round(float(dur) / FRAME_STEP_SEC))))
+
+
+def min_crops(dur):
+    """Real crops that must be cut for the benchmark to count: 6 for windows under 40 s, 8 for longer ones."""
+    return MIN_CROPS_SHORT if float(dur) < SHORT_SOURCE_SEC else MIN_CROPS_LONG
+
+
+def check_crops(n_real, have_roi, dur):
+    need = min_crops(dur)
+    if n_real < need or not have_roi:
+        raise NotEnoughCrops(f"only {n_real} real crops could be cut from the source (need {need} for a {float(dur):.0f} s window"
+                             + ("" if have_roi else ", and the cam ROI frame could not be cut") + ")")
+    return need
 
 
 def grab(media, t, vf, w, h):
@@ -110,7 +136,7 @@ def md_table(res, sel, deb, sinfo, fmt_note, b3=None):
 
 
 def run(media, start, end, out_dir, vod_id="", url="", log=print, cache_dir=None, cookies=None, proxy=None,
-        candidates=cam_sr.CANDIDATES, n_frames=N_FRAMES):
+        candidates=cam_sr.CANDIDATES, n_frames=None):
     import cv2
     from . import render_clip
     os.makedirs(out_dir, exist_ok=True)
@@ -130,6 +156,7 @@ def run(media, start, end, out_dir, vod_id="", url="", log=print, cache_dir=None
     cam = gen["cam"] if generic else render_clip.seeded_cam(media, start, dur, rect, src_w, src_h, log)
     if cam is None:
         raise ValueError("no facecam verified in the cam zone: no real crops to benchmark")
+    n_frames = n_frames or sample_count(dur)
     boxes, region = pick_boxes(cam, rect, src_w, src_h, fps, dur, n_frames, region=gen["region"], full=generic)
     log(f"cam region {region}, crop {boxes[0]['w']}x{boxes[0]['h']} px (x{cam_sr.SCALE} = "
         f"{boxes[0]['w'] * cam_sr.SCALE}x{boxes[0]['h'] * cam_sr.SCALE}), {len(boxes)} sample frames")
@@ -144,8 +171,7 @@ def run(media, start, end, out_dir, vod_id="", url="", log=print, cache_dir=None
         if roi is None:
             rx, ry, rw, rh = roi_of(b, region)
             roi = grab(media, t, crop_vf("", rx, ry, rw, rh), rw, rh)
-    if len(raw) < 3 or roi is None:
-        raise RuntimeError(f"only {len(raw)} real crops could be cut from the source")
+    check_crops(len(raw), roi is not None, dur)         # too few real crops: NotEnoughCrops (the CLI skips the bench, the render goes on)
 
     # deblock filters on the same crops (filter runs on the FULL frame so its block grid stays aligned)
     deb_rows = {}

@@ -226,6 +226,14 @@ def denoise(img):
     return cv2.bilateralFilter(img, 5, 20, 5)
 
 
+def default_b3(warning):
+    """The cam chain used when the benchmark was skipped: Real-ESRGAN at the start SR share, no deblock. Only the
+    benchmark gate is skipped; fidelity, blockiness, edge and ghosting are still measured on the real render."""
+    return {"method": "realesrgan", "cam_fps": cam_sr.B3_FPS_TIERS[0], "deblock": "none", "deblock_vf": "",
+            "denoise_vf": cam_sr.DENOISE_VF, "blend": cam_sr.BLEND_START, "ok": True, "reasons": [], "bench_skipped": True,
+            "reason": "benchmark skipped: " + str(warning)[:300]}
+
+
 def load_b3(out_dir):
     """The cam chain the benchmark step chose (out/cam_bench.json, key b3). Raises a clear ValueError when there is
     none or when it says the quality gate failed or only plain lanczos is left: that is never shipped."""
@@ -236,6 +244,8 @@ def load_b3(out_dir):
         d = json.load(f)
     if d.get("error"):
         raise ValueError(f"cam benchmark failed, so the cam block cannot be enhanced: {d['error']}")
+    if d.get("skipped"):                # too few real crops: no bench gate, default chain; the render's own gates still decide
+        return default_b3(d.get("warning", "benchmark skipped"))
     b3 = d.get("b3")
     if not b3:
         raise ValueError("cam_bench.json has no b3 section (benchmark from an older build)")
@@ -680,6 +690,9 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
     if use_cam:                         # B3: the cam block comes from the benchmark's chain (never plain lanczos)
         t = time.monotonic()
         b3 = load_b3(out_dir)
+        if b3.get("bench_skipped"):
+            log("WARNING cam benchmark gate skipped: " + b3["reason"])
+            notes.append("cam benchmark skipped (" + b3["reason"] + "); default cam chain, render gates unchanged")
         try:
             up = cam_sr.make(b3["method"]).load()
         except cam_sr.ModelError as e:

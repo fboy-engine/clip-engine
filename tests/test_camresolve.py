@@ -7,7 +7,7 @@ from unittest import mock
 
 import numpy as np
 
-from clip_engine import camfind, camresolve, layout, render_clip
+from clip_engine import cam_bench, camfind, camresolve, layout, render_clip
 
 LAUREN = {"width": 1920, "height": 1080, "frames": 24,
           "cam": {"rect_px": [1304, 0, 1920, 424], "rect_frac": [0.6792, 0.0, 1.0, 0.3926], "confidence": 0.989,
@@ -34,8 +34,12 @@ class Pieces(unittest.TestCase):
         self.assertFalse(camresolve.is_auto({}, None, "none"))
 
     def test_inset_only_on_border_lines(self):
-        self.assertEqual(camresolve.inset_region((1304, 0, 1920, 424), LAUREN["cam"]["sides"]), (1307, 0, 1920, 421))
+        self.assertEqual(camresolve.inset_region((1304, 0, 1920, 424), LAUREN["cam"]["sides"]), (1308, 0, 1920, 420))
         self.assertEqual(camresolve.inset_region((10, 10, 100, 50), {"left": "edge", "top": "edge"}), (10, 10, 100, 50))
+        for rect in ((1303, 1, 1919, 423), (7, 9, 101, 55)):           # always even and inside the rectangle
+            g = camresolve.inset_region(rect, {"left": "line", "right": "line", "top": "line", "bottom": "line"})
+            self.assertTrue(all(v % 2 == 0 for v in g), g)
+            self.assertTrue(g[0] >= rect[0] and g[1] >= rect[1] and g[2] <= rect[2] and g[3] <= rect[3], g)
 
     def test_face_cam_is_one_constant_track_with_the_seeded_cam_keys(self):
         cam = camresolve.face_cam(LAUREN, 30.0)
@@ -50,10 +54,11 @@ class Pieces(unittest.TestCase):
         region = camresolve.inset_region((1304, 0, 1920, 424), LAUREN["cam"]["sides"])
         path = layout.face_path(camresolve.face_cam(LAUREN, 30.0)["obs"], 10, 60.0)
         box = layout.cam_boxes(path, region, full=True)[0]
-        self.assertAlmostEqual(box[2], 613.0)
-        self.assertAlmostEqual(box[3], 306.5)
+        self.assertEqual(region, (1308, 0, 1920, 420))
+        self.assertAlmostEqual(box[2], 612.0)
+        self.assertAlmostEqual(box[3], 306.0)
         self.assertTrue(box[0] >= region[0] and box[0] + box[2] <= region[2] and box[1] >= region[1] and box[1] + box[3] <= region[3])
-        self.assertAlmostEqual(layout.upscale([box]), 1080 / 613.0, 4)       # upscale through the existing cam chain
+        self.assertAlmostEqual(layout.upscale([box]), 1080 / 612.0, 4)       # upscale through the existing cam chain
         old = layout.cam_boxes(path, region)[0]                              # the legacy rule is unchanged
         self.assertAlmostEqual(old[2], max(84 * layout.FACE_BOX_FACTOR, 1080 / 3.0))
 
@@ -70,7 +75,7 @@ class Resolve(unittest.TestCase):
             r = camresolve.resolve("m.mp4", 0.0, 36.0, 1920, 1080, d, {}, None, "", log=lambda *a: None)
             self.assertTrue(dm.called)
             self.assertTrue(r["generic"])
-            self.assertEqual(r["region"], (1307, 0, 1920, 421))
+            self.assertEqual(r["region"], (1308, 0, 1920, 420))
             self.assertEqual(r["rect_px"], (1304.0, 0.0, 1920.0, 424.0))
             self.assertEqual(sorted(r["zones"]), ["cam", "chat", "side_panel"])
             self.assertEqual(r["cam_rect"], [0.6792, 0.0, 1.0, 0.3926])
@@ -109,9 +114,25 @@ class Resolve(unittest.TestCase):
                 self.assertTrue(_load(d)["source"].startswith(why))
 
 
+class BenchCrops(unittest.TestCase):
+    def test_every_crop_and_roi_the_bench_asks_ffmpeg_for_is_even_and_inside_the_region(self):
+        res = dict(LAUREN)
+        cam = camresolve.face_cam(res, 27.0)
+        region = camresolve.inset_region((1304, 0, 1920, 424), LAUREN["cam"]["sides"])
+        boxes, reg = cam_bench.pick_boxes(cam, cam["rect"], 1920, 1080, 60.0, 27.0, region=region, full=True)
+        self.assertEqual(reg, region)
+        for b in boxes:
+            self.assertTrue(b["x"] % 2 == 0 and b["y"] % 2 == 0 and b["w"] % 2 == 0 and b["h"] % 2 == 0, b)
+            self.assertTrue(b["x"] >= region[0] and b["y"] >= region[1] and b["x"] + b["w"] <= region[2] and b["y"] + b["h"] <= region[3], b)
+            rx, ry, rw, rh = cam_bench.roi_of(b, region)
+            self.assertTrue(all(v % 2 == 0 for v in (rx, ry, rw, rh)), (rx, ry, rw, rh))
+            self.assertTrue(rx >= region[0] and ry >= region[1] and rx + rw <= region[2] and ry + rh <= region[3])
+        self.assertEqual((boxes[0]["w"], boxes[0]["h"]), (612, 306))
+
+
 class Summary(unittest.TestCase):
     def test_run_summary_shows_the_cam_find_and_the_rendered_gate(self):
-        r = {"cam_find": {"generic": True, "rect_px": [1304, 0, 1920, 424], "region_px": [1307, 0, 1920, 421], "confidence": 0.989,
+        r = {"cam_find": {"generic": True, "rect_px": [1304, 0, 1920, 424], "region_px": [1308, 0, 1920, 420], "confidence": 0.989,
                           "zones": {"cam": [1304, 0, 1920, 424], "chat": [1728, 424, 1920, 1074]}},
              "rendered_gate": {"ok": False, "reasons": ["frame 2: panel overlaps zone cam"], "frames": [{}, {}]}}
         s = render_clip.summary_md(r)

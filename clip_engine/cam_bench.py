@@ -45,6 +45,7 @@ def pick_boxes(cam, rect, src_w, src_h, fps, dur, n=N_FRAMES, region=None, full=
         h = w // 2
         x = int(min(max(round(l), region[0]), region[2] - w))
         y = int(min(max(round(t), region[1]), region[3] - h))
+        x, y = x - x % 2, y - y % 2                     # even crop origin (yuv420p), still inside the region (its edges are even)
         out.append({"t_off": i / fps, "x": x, "y": y, "w": w, "h": h})
     return out, region
 
@@ -52,6 +53,7 @@ def pick_boxes(cam, rect, src_w, src_h, fps, dur, n=N_FRAMES, region=None, full=
 def roi_of(b, region, m=cam_sr.ROI_MARGIN):
     x0, y0 = max(region[0], b["x"] - m), max(region[1], b["y"] - m)
     x1, y1 = min(region[2], b["x"] + b["w"] + m), min(region[3], b["y"] + b["h"] + m)
+    x0, y0, x1, y1 = x0 - x0 % 2, y0 - y0 % 2, x1 - x1 % 2, y1 - y1 % 2        # even: ffmpeg crop on yuv420p rounds odd values down
     return x0, y0, x1 - x0, y1 - y0
 
 

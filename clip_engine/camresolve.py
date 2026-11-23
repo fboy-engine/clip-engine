@@ -8,6 +8,8 @@ out/cam_find.json are written on EVERY run, also when the detector refuses.
 import json
 import os
 
+import numpy as np
+
 from . import camfind
 
 INSET = 3          # px: a cam rectangle's straight border line is not part of the picture, the cam window stays inside it
@@ -35,7 +37,16 @@ def inset_region(rect_px, sides, m=INSET):
         y0 += m
     if sides.get("bottom") == "line":
         y1 -= m
-    return int(round(x0)), int(round(y0)), int(round(x1)), int(round(y1))
+    # EVEN edges, always inside the rectangle: ffmpeg's crop on yuv420p rounds odd x/y/w/h down, so an odd region makes the 1-frame grabs
+    # come back short (run 45126781594: the bench could not cut its ROI at x=1307)
+    def up(v):
+        v = int(np.ceil(v))
+        return v + (v % 2)
+
+    def down(v):
+        v = int(np.floor(v))
+        return v - (v % 2)
+    return up(x0), up(y0), down(x1), down(y1)
 
 
 def _plain(o):

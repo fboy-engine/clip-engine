@@ -76,13 +76,17 @@ def face_path(obs, n, fps, sigma_sec=1.0):
     return _smooth(cx, sigma_sec * fps), _smooth(cy, sigma_sec * fps), fw
 
 
-def cam_boxes(path, region):
+def cam_boxes(path, region, full=False):
     """Per-frame source boxes (left, top, w, h), w/h == 2, inside `region` (px x0,y0,x1,y1).
-    Width is face width * 4.2 (face + shoulders), at least out_w/3 so the upscale stays moderate."""
+    Width is face width * 4.2 (face + shoulders), at least out_w/3 so the upscale stays moderate.
+    full=True (a generic-detected cam): the biggest 2:1 window the region holds, so the whole cam is shown, never stretched."""
     cx, cy, fw = path
     rx0, ry0, rx1, ry1 = region
-    w = max(fw * FACE_BOX_FACTOR, OUT_W / MAX_CAM_UPSCALE)
-    w = min(w, rx1 - rx0, (ry1 - ry0) * CAM_ASPECT)
+    if full:
+        w = min(rx1 - rx0, (ry1 - ry0) * CAM_ASPECT)
+    else:
+        w = max(fw * FACE_BOX_FACTOR, OUT_W / MAX_CAM_UPSCALE)
+        w = min(w, rx1 - rx0, (ry1 - ry0) * CAM_ASPECT)
     h = w / CAM_ASPECT
     out = []
     for x, y in zip(cx, cy):

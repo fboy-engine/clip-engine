@@ -7,7 +7,7 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from . import caption as capmod
-from . import sheet, states
+from . import poster, sheet, states
 from .states import Item
 
 
@@ -64,18 +64,58 @@ def render_cells(items, now, timings, tz, sheet_title=None):
     return c
 
 
-def tick(io, cfg, now, fake=False, timings=None):
-    """Returns a dict summary. `timings` overrides approve_gap_min / submit_window_min (tests only)."""
+class Router:
+    """Fake items go to the fake uploader. A real item only ever reaches a real uploader when
+    allow_real is set (never in this build: the CLI does not pass it)."""
+
+    def __init__(self, fake, real=None, allow_real=False):
+        self.fake, self.real, self.allow_real = fake, real, allow_real
+
+    def _pick(self, item):
+        if item.kind == "fake":
+            return self.fake
+        if self.allow_real and self.real is not None:
+            return self.real
+        raise RuntimeError("uploader not enabled")
+
+    def post(self, item, token):
+        return self._pick(item).post(item, token)
+
+    def find(self, item, token, since):
+        return self._pick(item).find(item, token, since)
+
+
+def tick(io, cfg, now, fake=False, timings=None, guard=None, extra_values=None, extra_log=None,
+         uploader=None, fake_uploader=None, allow_real_upload=False, run_id=""):
+    """One pass. Returns a dict summary. `timings` overrides approve_gap_min / submit_window_min (tests only).
+
+    guard(cells, now): called on every fresh read (and again before an upload); it raises to stop the pass
+    (the loop uses it for the lock). extra_values: cells written with this pass (the heartbeat).
+    A post is recorded as POSTING (with an intent note) in the sheet BEFORE the upload is called."""
     tim = dict(cfg["timings"])
     tim.update(timings or {})
     tz = ZoneInfo(cfg.get("display_tz", "UTC"))
     snap = io.read()
+    if guard:
+        guard(snap.cells, now)
     items, cells = snap.items, snap.cells
-    log, out = [], {}
+    log, all_log, notes, out = list(extra_log or []), [], [], {}
+    log_rows = [int(cells.get("log_rows") or 1)]
+    router = Router(fake_uploader or poster.FakeUploader(), uploader, allow_real_upload)
     ticked = lambda v: v is True or str(v).strip().upper() == "TRUE"
     approve = ticked(cells.get("approve"))
     confirm = ticked(cells.get("add_confirm"))
-    write_vals = {}
+    write_vals = dict(extra_values or {})
+
+    def flush(values):
+        n = len(log)
+        io.write(now, items=items, values=values, log_lines=log, log_rows=log_rows[0])
+        log_rows[0] += n
+        all_log.extend(log)
+        del log[:]
+
+    # 0) settle anything an earlier run left in POSTING (crash, timeout, restart)
+    poster.reconcile(items, router, now, log, notes=notes)
 
     # 1) Add link, only when everything is used
     if confirm:
@@ -105,7 +145,7 @@ def tick(io, cfg, now, fake=False, timings=None):
     by_n = {i.n: i for i in items}
     final = []
     for a, n in acts:
-        if a == "POST" and by_n[n].kind != "fake":
+        if a == "POST" and by_n[n].kind != "fake" and not (allow_real_upload and uploader is not None):
             final.append(("CLEAR_TICK", n))
             log.append(("POST_BLOCKED", "clip #%d: uploader not enabled (waits for 'test upload now')" % n))
         else:
@@ -119,16 +159,28 @@ def tick(io, cfg, now, fake=False, timings=None):
         if a == "CLEAR_TICK":
             log.append(("TICK_CLEARED", "APPROVE ticked while nothing was waiting for approval"))
 
-    # 4) fake upload: no Instagram anywhere; clearly fake id and link
-    for i in items:
-        if i.state == "POSTING" and i.kind == "fake":
-            states.transition(i, "POSTED", now=now, media_id="FAKE-%d" % i.n,
-                              permalink="https://www.instagram.com/reel/FAKE%d/" % i.n)
-            log.append(("FAKE_POSTED", "clip #%d (no Instagram call)" % i.n))
-            out["posted"] = i.n
+    # 4) post: record POSTING + intent first, check we still own the sheet, only then upload
+    fresh = poster.begin(items, now, run_id, {n for a, n in final if a == "POST"})
+    if fresh:
+        for i in fresh:
+            log.append(("POSTING", "clip #%d (intent recorded before the upload)" % i.n))
+        flush(write_vals)
+        write_vals = {}
+        snap2 = io.read()
+        if guard:
+            guard(snap2.cells, now)
+        mine = [i for i in fresh if poster.still_mine(snap2.items, i)]
+        if len(mine) != len(fresh):
+            log.append(("POST_ABORTED", "another loop recorded this post first, nothing uploaded"))
+            items = snap2.items  # the sheet is the truth, do not overwrite it
+            fresh = []
+        for i in fresh:
+            if poster.execute(i, router, now, log) == "posted":
+                out["posted"] = i.n
 
     cellvals = render_cells(items, now, tim, tz)
     write_vals.update(cellvals)
-    io.write(now, items=items, values=write_vals, log_lines=log, log_rows=cells.get("log_rows"))
-    out.update({"actions": final, "log": log, "state": cellvals["state"], "states": {i.n: i.state for i in items}})
+    flush(write_vals)
+    out.update({"actions": final, "log": all_log, "notes": notes, "state": cellvals["state"],
+                "states": {i.n: i.state for i in items}})
     return out

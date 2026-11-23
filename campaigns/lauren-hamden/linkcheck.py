@@ -12,7 +12,6 @@ import sys
 BASE = "https://m.twitch.tv/"
 SOURCES = [
     (1, "clip", BASE + "laurenhamdenn/clip/GoldenSincereHamburgerHeyGuys-Zo31y1z1tLdwRScS"),
-    (2, "clip", BASE + "laurenhamdenn/clip/HelplessCredulousPlumDBstyle-mxIlp8w2mytofsrK"),
     (3, "clip", BASE + "laurenhamdenn/clip/MuddyTardyClipzFeelsBadMan-Qb1_guoZe76pMLRY"),
     (4, "clip", BASE + "laurenhamdenn/clip/SlickPatientToadDoritosChip-LV7_h3WaUULTckLh"),
     (5, "clip", BASE + "laurenhamdenn/clip/PeacefulBraveBubbleteaOhMyDog-smiMxfhYlj3rkpNB"),

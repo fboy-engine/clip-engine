@@ -51,3 +51,15 @@ QUEUED -> EDITING -> READY -> AWAITING_APPROVAL -> POSTING -> POSTED -> DONE.
 - ONE cell map in Code.gs (CELL_MAP_BEGIN..END) mirrors campaign_lib/sheet.py; tests/test_apps_script_panel.py fails on any difference (also sheet id, tz, reach url, 30 min window vs campaign.json). tests/apps_script_panel_test.js = state-to-button logic, countdown format, link validation, server functions on a fake sheet.
 - Known gap: sheet.TWITCH_URL accepts Twitch links only; the panel also accepts youtube.com (as asked), the engine then logs ADD_LINK_REJECTED until the regex is widened.
 - B3c (ffd2321, 7f537eb): Composio client retries a 401 once with the x-consumer-api-key header, strips whitespace/quotes from the key, reports the primary header's answer. Probes 45055883510, 45056155790, 45056277151 (with fallback), 45056467090 (stripped key): all HTTP 401 "Invalid API key" on GET /connected_accounts, so init/tick via Actions stay blocked until a valid COMPOSIO_API_KEY is in the secret. Sheet still in demo state (2 fake clips).
+
+## Composio setup (working, no secret values here)
+- Key: a PROJECT API key (starts with `ak_`), stored only in the repo secret COMPOSIO_API_KEY. Never in a log or a file.
+- Base: https://backend.composio.dev/api/v3.1 (composio.py BASE, env COMPOSIO_BASE overrides).
+- Header: `x-api-key: <project key>` (x-consumer-api-key is only the automatic fallback after a 401).
+- Sheets account: connected account `googlesheets_ostic-yed` (ACTIVE, the runner discovers it by itself). Auth config name: NOT recorded in the repo yet; the user must write it here (Composio dashboard, Auth configs).
+- Sheet reset on 2026-11-23 (init fake 0): the 10 real sources, all QUEUED, no fake rows.
+
+## RESUME POINT (campaign Claude, 2026-11-23)
+- DONE: d2c641a (lock, heartbeat, handoff, panel banners, safe logs), 3064af9 (idempotent poster, fake uploader), sheet cleared (item 1).
+- OPEN, in order: 2 Instagram uploader (dry-run), 3 Twitch source finder, 4 engine->panel wiring, 5 self-chaining workflow, 6 flow checks.
+- Push path: Composio GITHUB_COMMIT_MULTIPLE_FILES, account github_corral-fowler, author fboy-engine noreply.

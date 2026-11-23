@@ -112,3 +112,36 @@ class Client:
         if r.get("successful") is False or r.get("error"):
             raise ComposioError("%s failed: %s" % (slug, str(r.get("error") or r)[:400]))
         return r.get("data", r)
+
+
+def diagnose():
+    """Key-safe probe of the documented request: GET <BASE>/connected_accounts with header x-api-key.
+    Prints only length, first 3 chars, whitespace/quote/newline flags, URL, header NAME and HTTP status.
+    No fallback header. Never prints the key. Returns the HTTP status (0 = network error)."""
+    raw = os.environ.get("COMPOSIO_API_KEY", "")
+    key = raw.strip().strip("\"'").strip()
+    print("diag key length (raw env): %d, after strip: %d" % (len(raw), len(key)))
+    print("diag first 3 chars: %r" % raw[:3])
+    print("diag has whitespace inside: %s, leading/trailing whitespace: %s, quotes: %s, newline/CR: %s" % (
+        any(c.isspace() for c in raw.strip()), raw != raw.strip(),
+        ('"' in raw) or ("'" in raw), ("\n" in raw) or ("\r" in raw)))
+    url = BASE + "/connected_accounts?toolkit_slugs=googlesheets&statuses=ACTIVE&limit=1"
+    print("diag URL: GET %s" % url)
+    print("diag header NAME: %s (documented project-key header; no fallback)" % AUTH_HEADER)
+    if not key:
+        print("diag HTTP status: not sent (COMPOSIO_API_KEY empty)")
+        return 0
+    req = urllib.request.Request(url, headers={AUTH_HEADER: key, "Accept": "application/json",
+                                               "User-Agent": "campaign-lib/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            status, body = r.status, ""
+    except urllib.error.HTTPError as e:
+        status, body = e.code, scrub(e.read().decode(errors="replace"), key)[:200]
+    except (urllib.error.URLError, TimeoutError) as e:
+        print("diag network error: %s" % scrub(str(e), key))
+        return 0
+    print("diag HTTP status: %s" % status)
+    if body:
+        print("diag response: %s" % body)
+    return status

@@ -148,4 +148,7 @@ SESSION 5 (2026-11-23) RESUME POINT. Main was a33f0dd at start.
 - Gemini: 401/403 is final for the process (caption_sources._GEMINI_OFF): one call, no retries, one short log line.
 - tests/test_speech_spans.py (synthetic), test_captions_pass uses non-silent pcm, test_caption_sources latch tests.
 - NEXT: C (gameplay sharpness gate) after a clip renders; A4 skipped by the user for now (docs/reference_clip.json contents are not specified anywhere).
+- RESULTS on 56b8f6b (unit-tests green 45165852095): Lauren run 45166275754 FAILED the captions gate again, 89.2% (need 90%): VAD 26.03 s, counted 23.11 s, excluded 2.9 s = digital silence 9.43-9.6, 12.23-12.45, 12.83-12.98, 15.55-17.18, 21.53-21.58 + one word-less steady stretch 22.58-23.26 (syllable rhythm 0.34 vs 0.35, marginal). Unrefined 79.2% = backstop OK (>= 75%). Voiced stretches 11.4-12.5 and 15.1-15.8 stay counted (rhythmic, no word). Per the user: this clip is skipped, nothing else loosened. Also seen: cam bench B3 SR blend gate FAIL ("edge 17.68 not higher than plain lanczos 18.85", no SR share passes); the render goes on with the default chain.
+- 19 s clip run 45168368867 (render 0-19, dry_run) FAILED in cam-bench: cam find NOT confident, best candidate = whole frame [0,0,1920,1080] (no straight border around the face; 4 of 4 sides without border). Needs a cam_rect, cam_corner or cam_corner=none (gameplay-only) from the user. Not guessed.
+- NEXT: user decision for the 19 s clip (cam_rect / corner / none); C (sharpness gate) after a clip renders; A4 skipped by the user.
 

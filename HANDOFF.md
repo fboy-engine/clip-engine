@@ -152,3 +152,8 @@ SESSION 5 (2026-11-23) RESUME POINT. Main was a33f0dd at start.
 - 19 s clip run 45168368867 (render 0-19, dry_run) FAILED in cam-bench: cam find NOT confident, best candidate = whole frame [0,0,1920,1080] (no straight border around the face; 4 of 4 sides without border). Needs a cam_rect, cam_corner or cam_corner=none (gameplay-only) from the user. Not guessed.
 - NEXT: user decision for the 19 s clip (cam_rect / corner / none); C (sharpness gate) after a clip renders; A4 skipped by the user.
 
+
+SESSION 6 (2026-11-23) RESUME POINT. Main was 3064af9 at start (4a378f4 + two campaign-only commits by another session; campaign_lib untouched here).
+- Step 1 (19 s clip, cam_rect 0.679,0,1,0.393): runs 45172047239 (my typo: truncated clip id, ignore) and 45172106333 FAILED in cam-bench: "no confident cam, best candidate [0,0,1920,1080]". ROOT CAUSE: cam-bench had no --cam-rect and the workflow did not pass the cam_rect input to it, so the hint only reached the render step, which never ran. cam_bench.run now takes cam_rect and passes it to camresolve.resolve (legacy path = same as render: seeded_cam face check on the hinted rect, no generic finder); cli cam-bench --cam-rect; clip.yml passes CAMRECT. Gates unchanged. tests/test_cam_bench_camrect.py. Full suite 524 OK locally (skipped 7).
+- Full clip id of the 19 s clip: TallSarcasticDumplingsRalpherZ-yfcKexOzQP153QQ6.
+- NEXT: re-dispatch the 19 s clip (render_start 2, render_end 19, cam_rect 0.679,0,1,0.393, cache_only false, dry_run true, warp false, cookies false) once unit-tests is green on this commit; if the render face check does not confirm faces in nearly all sampled frames, skip the clip. Then the other Lauren clips one at a time, then C (sharpness gate).

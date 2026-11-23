@@ -200,12 +200,15 @@ def cmd_cam_bench(a):
     """Benchmark the cam upscalers on the real cam crops of the cached source (no download of media)."""
     from . import cam_bench, cam_sr, window
     cookies, proxy = _env()
-    inputs = {"start": a.start, "end": a.end, "vod_id": a.vod_id}
+    hint = getattr(a, "cam_rect", None)
+    rect = [float(x) for x in hint.split(",")] if hint else None
+    inputs = {"start": a.start, "end": a.end, "vod_id": a.vod_id, "cam_rect": rect}
     try:
         window.check_window(a.start, a.end)
         _, md = cam_bench.run(a.media, a.start, a.end, a.out, vod_id=a.vod_id, url=a.url if a.formats else "",
                               cache_dir=a.cache_dir or None, cookies=cookies, proxy=proxy,
-                                  candidates=tuple(c for c in a.candidates.split(",") if c) or cam_sr.CANDIDATES)
+                                  candidates=tuple(c for c in a.candidates.split(",") if c) or cam_sr.CANDIDATES,
+                                  cam_rect=rect)
     except cam_bench.NotEnoughCrops as e:                # not a render blocker: warn, skip the benchmark gate, the render goes on
         warn = f"WARNING cam-bench skipped: {str(e)[:500]}. The render uses the default cam chain; its own gates still apply."
         print(warn)
@@ -298,6 +301,7 @@ def main(argv=None):
     cb.add_argument("--vod-id", dest="vod_id", default="")
     cb.add_argument("--url", default="", help="stream URL: only used to LIST formats (metadata), never to download")
     cb.add_argument("--formats", action="store_true", help="also list the platform's formats (metadata only)")
+    cb.add_argument("--cam-rect", dest="cam_rect", default=None, help="x0,y0,x1,y1 fractions (same as render)")
     cb.add_argument("--cache-dir", dest="cache_dir", default="")
     cb.add_argument("--candidates", default="", help="comma list: lanczos,fsrcnn,edsr,realesrgan (empty = all of cam_sr.CANDIDATES)")
     cb.add_argument("--out", default="out")

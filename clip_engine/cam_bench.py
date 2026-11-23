@@ -136,7 +136,7 @@ def md_table(res, sel, deb, sinfo, fmt_note, b3=None):
 
 
 def run(media, start, end, out_dir, vod_id="", url="", log=print, cache_dir=None, cookies=None, proxy=None,
-        candidates=cam_sr.CANDIDATES, n_frames=None):
+        candidates=cam_sr.CANDIDATES, n_frames=None, cam_rect=None):
     import cv2
     from . import render_clip
     os.makedirs(out_dir, exist_ok=True)
@@ -148,7 +148,7 @@ def run(media, start, end, out_dir, vod_id="", url="", log=print, cache_dir=None
     start, end = window.check_window(start, end, pr["duration"])      # empty/zero window: clear error, never 0 samples
     dur = end - start
     # a known VOD keeps its zone seed; otherwise the generic detector decides (same decision as the render: camresolve)
-    gen = camresolve.resolve(media, start, dur, src_w, src_h, out_dir, zones, None, None, log)
+    gen = camresolve.resolve(media, start, dur, src_w, src_h, out_dir, zones, cam_rect, None, log)
     rect = gen["cam_rect"] or exclusion.cam_seed_frac(zones, src_w, src_h)
     if not rect:
         raise ValueError("cam bench: no cam rectangle (not a known VOD and the generic detector gave none)")

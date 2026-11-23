@@ -289,8 +289,11 @@ jobs:
           RSTART: ${{ inputs.render_start }}
           REND: ${{ inputs.render_end }}
           SRCURL: ${{ inputs.url }}
+          CAMRECT: ${{ inputs.cam_rect }}
         run: |
-          python -m clip_engine.cli cam-bench out/source.mp4 --start "$RSTART" --end "$REND" --vod-id "$SRCURL" --url "$SRCURL" --formats --out out
+          ARGS=()
+          [ -n "$CAMRECT" ] && ARGS+=(--cam-rect "$CAMRECT")
+          python -m clip_engine.cli cam-bench out/source.mp4 --start "$RSTART" --end "$REND" --vod-id "$SRCURL" --url "$SRCURL" --formats "${ARGS[@]}" --out out
       - name: Upload cam benchmark (json, table, cam_compare.png)
         if: ${{ always() && inputs.cam_bench && !inputs.render }}
         uses: actions/upload-artifact@v4

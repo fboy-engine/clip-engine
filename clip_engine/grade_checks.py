@@ -3,7 +3,7 @@
 Each check returns {"name", "status", "detail"}; status is pass | fail | warn | n/a.
 A check that cannot measure something says so (warn / n/a); it never passes by default.
 """
-from . import cam_sr, captions, hooks
+from . import cam_sr, captions, captions_verify, hooks
 from .config import (CRF, MIN_LEN, MAX_LEN, OUT_W, OUT_H, PUNCH_TARGET, PUNCH_HARD_CAP,
                      TARGET_LUFS, TRUE_PEAK, HOOK_MAX_SEC)
 
@@ -136,6 +136,30 @@ def check_captions(m):
     return _c("one caption style, max 1 highlight", FAIL if bad else PASS,
               "; ".join(bad) or f"{a.get('caption_lines')} lines, max {a.get('max_highlights')} highlight per line, "
               f"font {', '.join(fonts or [])}")
+
+
+def check_caption_words(m):
+    """Every spoken word is captioned and the second sources do not disagree (captions_verify numbers from the render)."""
+    name = "captions: every spoken word, second source agrees"
+    cc = (m.get("render") or {}).get("captions_check")
+    if not cc or cc.get("coverage") is None:
+        return _c(name, FAIL, "no captions check measurement: the caption words were not verified")
+    bad = []
+    if cc["coverage"] < captions_verify.MIN_COVERAGE:
+        bad.append(f"captions cover {cc['coverage'] * 100:.0f}% of the speech seconds (need "
+                   f"{captions_verify.MIN_COVERAGE * 100:.0f}%)")
+    if cc.get("unresolved"):
+        bad.append(f"{len(cc['unresolved'])} unresolved disagreement(s)")
+    c = cc.get("counts") or {}
+    g, o = cc.get("gemini") or {}, cc.get("ocr") or {}
+    nums = (f"coverage {cc['coverage'] * 100:.0f}% of {cc.get('speech_sec')} s speech; {c.get('corrected', 0)} corrected, "
+            f"{c.get('inserted', 0)} inserted, {c.get('unresolved', 0)} unresolved; gemini "
+            f"{'yes' if g.get('available') else 'no'}, ocr {'yes' if o.get('available') else 'no'}")
+    if bad:
+        return _c(name, FAIL, "; ".join(bad) + " | " + nums)
+    if not cc.get("second_source"):
+        return _c(name, WARN, "no second source was available (Gemini and OCR both off): one transcript only | " + nums)
+    return _c(name, PASS, nums)
 
 
 def check_caption_lane(m):
@@ -301,7 +325,8 @@ def check_hook_match(m):
 
 
 ALL = (check_video, check_duration, check_trim, check_crf, check_loudness, check_balance, check_audio_added,
-       check_hook, check_hook_match, check_opening, check_cold_open, check_ending, check_captions, check_caption_lane,
+       check_hook, check_hook_match, check_opening, check_cold_open, check_ending, check_captions, check_caption_words,
+       check_caption_lane,
        check_layout, check_cam_quality,
        check_subject, check_crop, check_visual, check_motion)
 

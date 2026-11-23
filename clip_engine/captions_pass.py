@@ -1,0 +1,70 @@
+"""The caption check as one step of render(): rescue ASR + Gemini audio text + OCR of game subtitles -> captions_verify.
+
+run() takes the clip-clock words (unmasked), returns (final unmasked words, check dict). The caller masks profanity
+afterwards (asr_fix.mask_profanity), writes out/captions_check.json (write_json) and refuses the clip when
+check['gate']['ok'] is false (coverage < 90% of the speech seconds, or a disagreement nothing settles)."""
+import json
+import os
+
+from . import caption_sources as cs
+from . import captions_verify as cv
+from . import transcribe
+
+
+def summary(check):
+    """The small block that goes into render.json grade_inputs (the grader reads this, not the per-word rows)."""
+    src = check.get("sources", {})
+    return {"coverage": check.get("coverage"), "speech_sec": check.get("speech_sec"), "covered_sec": check.get("covered_sec"),
+            "second_source": check.get("second_source"), "counts": check.get("counts"),
+            "unresolved": check.get("unresolved", []), "gate": check.get("gate"),
+            "gemini": {k: src.get("gemini", {}).get(k) for k in ("available", "words", "error")},
+            "ocr": {"available": src.get("ocr", {}).get("available"),
+                    "lines_used": len(src.get("ocr", {}).get("lines_used", [])),
+                    "lines_read": check.get("ocr_info", {}).get("lines"), "error": check.get("ocr_info", {}).get("error")},
+            "rescue": {k: check.get("rescue", {}).get(k) for k in ("chunk_sec", "added", "error")}}
+
+
+def write_json(check, out_dir):
+    with open(os.path.join(out_dir, "captions_check.json"), "w") as f:
+        json.dump(check, f, indent=1)
+
+
+def run(media, s_f, dur, words, src_w, src_h, model_fn=None, avoid_px=None, key=None, log=print,
+        pcm=None, spans=None, gemini_fn=None, ocr_fn=None, ocr_frames=None):
+    """words: clip-clock {'w','s','e','p'}, unmasked. model_fn() -> transcribe_fn for the rescue pass (None = no rescue).
+    pcm/spans/gemini_fn/ocr_fn/ocr_frames are injectable for tests."""
+    if pcm is None:
+        pcm = transcribe.decode_pcm(media, s_f, s_f + dur)
+    if spans is None:
+        spans, _ = transcribe.vad_stats(pcm)
+    base = sorted((dict(w) for w in words), key=lambda w: w["s"])
+    rescued, rinfo = [], {"skipped": "no rescue model"}
+    if model_fn is not None:
+        box = []
+
+        def lazy(audio):            # the model is loaded only when some speech really has no word
+            if not box:
+                box.append(model_fn())
+            return box[0](audio)
+        rescued, rinfo = cs.rescue(pcm, base, spans, lazy)
+        log(f"caption rescue: {rinfo['chunk_sec']} s of speech without a word, {rinfo['added']} word(s) added")
+    base = sorted(base + rescued, key=lambda w: w["s"])
+    for w in base:
+        w["e"] = min(w["e"], dur)
+    if gemini_fn or key:
+        gtext, gerr = (gemini_fn or cs.gemini_text)(pcm, key)
+    else:
+        gtext, gerr = None, "GEMINI_API_KEY not set"
+    log("caption source gemini: " + (f"{len(cv.src_tokens(gtext))} words" if gtext else f"unavailable ({gerr})"))
+    ocr, oinfo = cs.ocr_lines(media, s_f, dur, src_w, src_h, avoid_px, frames=ocr_frames, ocr=ocr_fn)
+    log("caption source ocr: " + (f"{oinfo['lines']} subtitle lines from {oinfo['frames']} frames" if oinfo["available"]
+                                 else f"unavailable ({oinfo.get('error')})"))
+    final, check = cv.verify(base, gtext, ocr, spans, gerr)
+    for w in final:
+        w["e"] = min(w["e"], dur)
+    check["rescue"], check["ocr_info"], check["ocr_lines"] = rinfo, oinfo, ocr
+    check["rescued_words"] = [{"w": w["w"], "s": w["s"], "e": w["e"], "p": w["p"]} for w in rescued]
+    log(f"captions check: coverage {check['coverage'] * 100:.0f}% of {check['speech_sec']} s speech, "
+        f"{check['counts']['corrected']} corrected, {check['counts']['inserted']} inserted, "
+        f"{check['counts']['unresolved']} unresolved, gate {'PASS' if check['gate']['ok'] else 'FAIL'}")
+    return final, check

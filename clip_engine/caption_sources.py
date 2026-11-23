@@ -53,13 +53,25 @@ def clean_gemini(text):
     return re.sub(r"\s+", " ", t).strip()
 
 
+_GEMINI_OFF = None      # set once Gemini answers 401/403 (no access / free tier): later calls skip the network
+
+
 def gemini_text(pcm, key=None, generate=gemini.generate):
-    """-> (text or None, error or None). Never raises: Gemini being down only removes a second source."""
+    """-> (text or None, error or None). Never raises: Gemini being down only removes a second source.
+    An access error (401/403) is final for this process: one call, one short message, no retries."""
+    global _GEMINI_OFF
+    if _GEMINI_OFF:
+        return None, _GEMINI_OFF
     try:
-        raw = generate(GEMINI_PROMPT, key=key, timeout=60, deadline=100, max_calls=4,
+        raw = generate(GEMINI_PROMPT, key=key, timeout=60, deadline=100, max_calls=1, retries=1,
                        audio=("audio/wav", wav_b64(pcm)))
     except gemini.GeminiUnavailable as e:
-        return None, str(e)[:200]
+        msg = str(e)
+        m = re.search(r"HTTP (401|403)", msg)
+        if m:
+            _GEMINI_OFF = f"HTTP {m.group(1)}, no Gemini access for this key (free tier / billing)"
+            return None, _GEMINI_OFF
+        return None, msg[:200]
     except Exception as e:                       # network oddities must not kill the render
         return None, f"{type(e).__name__}: {str(e)[:120]}"
     return clean_gemini(raw), None

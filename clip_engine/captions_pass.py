@@ -8,6 +8,7 @@ import os
 
 from . import caption_sources as cs
 from . import captions_verify as cv
+from . import speech_spans as ss
 from . import transcribe
 
 
@@ -17,6 +18,8 @@ def summary(check):
     return {"coverage": check.get("coverage"), "speech_sec": check.get("speech_sec"), "covered_sec": check.get("covered_sec"),
             "second_source": check.get("second_source"), "counts": check.get("counts"),
             "unresolved": check.get("unresolved", []), "gate": check.get("gate"),
+            "speech": {k: check.get("speech", {}).get(k) for k in ("vad_speech_sec", "counted_speech_sec", "excluded_sec",
+                                                                    "excluded", "raw_window_coverage")},
             "gemini": {k: src.get("gemini", {}).get(k) for k in ("available", "words", "error")},
             "ocr": {"available": src.get("ocr", {}).get("available"),
                     "lines_used": len(src.get("ocr", {}).get("lines_used", [])),
@@ -55,13 +58,25 @@ def run(media, s_f, dur, words, src_w, src_h, model_fn=None, avoid_px=None, key=
         gtext, gerr = (gemini_fn or cs.gemini_text)(pcm, key)
     else:
         gtext, gerr = None, "GEMINI_API_KEY not set"
-    log("caption source gemini: " + (f"{len(cv.src_tokens(gtext))} words" if gtext else f"unavailable ({gerr})"))
+    log("caption source gemini: " + (f"{len(cv.src_tokens(gtext))} words" if gtext else f"unavailable ({str(gerr)[:60]})"))
     ocr, oinfo = cs.ocr_lines(media, s_f, dur, src_w, src_h, avoid_px, frames=ocr_frames, ocr=ocr_fn)
     log("caption source ocr: " + (f"{oinfo['lines']} subtitle lines from {oinfo['frames']} frames" if oinfo["available"]
                                  else f"unavailable ({oinfo.get('error')})"))
-    final, check = cv.verify(base, gtext, ocr, spans, gerr)
+    # speech seconds = the VAD seconds minus digital silence and word-less non-speech sound (every stretch is logged)
+    spans_eff, _, sinfo = ss.refine(pcm, spans, base)
+    log(f"caption speech seconds: {sinfo['counted_speech_sec']} of {sinfo['vad_speech_sec']} s VAD, "
+        f"{len(sinfo['excluded'])} stretch(es) excluded ({sinfo['excluded_sec']} s)")
+    final, check = cv.verify(base, gtext, ocr, spans_eff, gerr)
     for w in final:
         w["e"] = min(w["e"], dur)
+    raw = ss.raw_coverage(final, dur)
+    sinfo["raw_window_coverage"] = round(raw, 3)
+    check["speech"] = sinfo
+    check["coverage_vad_unrefined"] = round(cv.coverage(final, spans)[0], 3)
+    if raw < ss.MIN_RAW_COVERAGE:                 # backstop: the exclusions cannot hide a clip that is mostly uncaptioned
+        check["gate"]["reasons"].append(f"captions cover only {raw * 100:.0f}% of the whole clip window with no "
+                                        f"exclusions (need {ss.MIN_RAW_COVERAGE * 100:.0f}%)")
+        check["gate"]["ok"] = False
     check["rescue"], check["ocr_info"], check["ocr_lines"] = rinfo, oinfo, ocr
     check["rescued_words"] = [{"w": w["w"], "s": w["s"], "e": w["e"], "p": w["p"]} for w in rescued]
     log(f"captions check: coverage {check['coverage'] * 100:.0f}% of {check['speech_sec']} s speech, "

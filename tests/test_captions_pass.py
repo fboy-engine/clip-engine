@@ -8,6 +8,10 @@ from clip_engine import captions_pass
 from clip_engine import grade_checks as gc
 
 
+_t = np.arange(16000 * 6) / 16000
+SPEECHY = (0.05 * np.sin(2 * np.pi * 150 * _t) * (0.55 + 0.45 * np.sin(2 * np.pi * 4 * _t))).astype(np.float32)  # not silence
+
+
 def W(text, t0, step=0.32, p=0.95):
     out, t = [], t0
     for x in text.split():
@@ -22,7 +26,7 @@ class Pipeline(unittest.TestCase):
     def run_pass(self, words, spans, gtext, rescue_words=None):
         model_fn = (lambda: (lambda audio: rescue_words)) if rescue_words is not None else None
         return captions_pass.run("x.mp4", 0.0, 5.0, words, 1920, 1080, model_fn=model_fn, key="k",
-                                 pcm=np.zeros(16000 * 6, dtype=np.float32), spans=spans,
+                                 pcm=SPEECHY, spans=spans,
                                  gemini_fn=lambda p, k: (gtext, None), ocr_fn=lambda g: [], ocr_frames=[],
                                  log=lambda *_: None)
 

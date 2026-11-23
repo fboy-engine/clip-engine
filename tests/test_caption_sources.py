@@ -149,6 +149,33 @@ class GeminiText(unittest.TestCase):
         self.assertIsNone(text)
         self.assertIn("not set", err)
 
+    def test_a_403_is_final_one_call_one_short_message(self):
+        cs._GEMINI_OFF = None
+        calls = []
+
+        def gen(*a, **k):
+            calls.append(k)
+            raise gemini.GeminiUnavailable("gemini-3.8-flash: HTTP 403 The Gemini API free tier is not available for this project.")
+        try:
+            t1, e1 = cs.gemini_text(np.zeros(160, dtype=np.float32), "k", generate=gen)
+            t2, e2 = cs.gemini_text(np.zeros(160, dtype=np.float32), "k", generate=gen)
+            self.assertIsNone(t1)
+            self.assertIn("HTTP 403", e1)
+            self.assertLess(len(e1), 90)
+            self.assertEqual(e1, e2)
+            self.assertEqual(len(calls), 1)                      # the second caption pass never touches the network
+            self.assertEqual((calls[0]["max_calls"], calls[0]["retries"]), (1, 1))
+        finally:
+            cs._GEMINI_OFF = None
+
+    def test_other_gemini_errors_are_not_latched(self):
+        cs._GEMINI_OFF = None
+
+        def gen(*a, **k):
+            raise gemini.GeminiUnavailable("gemini-2.5-flash: deadline")
+        cs.gemini_text(np.zeros(160, dtype=np.float32), "k", generate=gen)
+        self.assertIsNone(cs._GEMINI_OFF)
+
     def test_generate_puts_audio_in_the_request_body(self):
         bodies = []
 

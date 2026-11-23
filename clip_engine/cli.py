@@ -198,14 +198,14 @@ def cmd_render(a):
 
 def cmd_cam_bench(a):
     """Benchmark the cam upscalers on the real cam crops of the cached source (no download of media)."""
-    from . import cam_bench, window
+    from . import cam_bench, cam_sr, window
     cookies, proxy = _env()
     inputs = {"start": a.start, "end": a.end, "vod_id": a.vod_id}
     try:
         window.check_window(a.start, a.end)
         _, md = cam_bench.run(a.media, a.start, a.end, a.out, vod_id=a.vod_id, url=a.url if a.formats else "",
                               cache_dir=a.cache_dir or None, cookies=cookies, proxy=proxy,
-                                  candidates=tuple(c for c in a.candidates.split(",") if c))
+                                  candidates=tuple(c for c in a.candidates.split(",") if c) or cam_sr.CANDIDATES)
     except Exception as e:
         msg = f"FAIL cam-bench: {type(e).__name__}: {str(e)[:600]}"
         print(msg)
@@ -286,8 +286,7 @@ def main(argv=None):
     cb.add_argument("--url", default="", help="stream URL: only used to LIST formats (metadata), never to download")
     cb.add_argument("--formats", action="store_true", help="also list the platform's formats (metadata only)")
     cb.add_argument("--cache-dir", dest="cache_dir", default="")
-    cb.add_argument("--candidates", default=",".join(__import__("clip_engine.cam_sr", fromlist=["x"]).CANDIDATES),
-                    help="comma list: lanczos,fsrcnn,edsr,realesrgan")
+    cb.add_argument("--candidates", default="", help="comma list: lanczos,fsrcnn,edsr,realesrgan (empty = all of cam_sr.CANDIDATES)")
     cb.add_argument("--out", default="out")
     cb.set_defaults(fn=cmd_cam_bench)
     g = sub.add_parser("grade")

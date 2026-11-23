@@ -11,7 +11,7 @@ import subprocess
 
 import numpy as np
 
-from . import cam_enhance, cam_sr, download, exclusion, layout, quality, srcinfo, window
+from . import cam_enhance, cam_sr, camresolve, download, exclusion, layout, quality, srcinfo, window
 
 SWS = "lanczos+accurate_rnd+full_chroma_int"
 N_FRAMES = 8
@@ -31,12 +31,12 @@ def crop_vf(prefix, x, y, w, h, suffix=""):
     return ",".join(s for s in (prefix, f"crop={w}:{h}:{x}:{y}", suffix) if s)
 
 
-def pick_boxes(cam, rect, src_w, src_h, fps, dur, n=N_FRAMES):
+def pick_boxes(cam, rect, src_w, src_h, fps, dur, n=N_FRAMES, region=None, full=False):
     """Integer crops (x, y, w, h) the render would use, at n evenly spaced moments: w a multiple of 6, 2:1."""
-    region = layout.region_px(rect, src_w, src_h)
+    region = tuple(region) if region else layout.region_px(rect, src_w, src_h)
     count = max(1, int(dur * fps))
     path = layout.face_path(cam["obs"], count, fps)
-    boxes = layout.cam_boxes(path, region)
+    boxes = layout.cam_boxes(path, region, full=full)
     out = []
     for k in range(n):
         i = min(count - 1, int((k + 0.5) / n * count))
@@ -117,15 +117,18 @@ def run(media, start, end, out_dir, vod_id="", url="", log=print, cache_dir=None
     sinfo = srcinfo.media_info(media)
     log("source: " + srcinfo.info_line(sinfo))
     zones = exclusion.zones_for(exclusion.vod_id_from_url(vod_id), src_w, src_h)
-    rect = exclusion.cam_seed_frac(zones, src_w, src_h)
-    if not rect:
-        raise ValueError("cam bench needs the cam zone of a known VOD (--vod-id)")
     start, end = window.check_window(start, end, pr["duration"])      # empty/zero window: clear error, never 0 samples
     dur = end - start
-    cam = render_clip.seeded_cam(media, start, dur, rect, src_w, src_h, log)
+    # a known VOD keeps its zone seed; otherwise the generic detector decides (same decision as the render: camresolve)
+    gen = camresolve.resolve(media, start, dur, src_w, src_h, out_dir, zones, None, None, log)
+    rect = gen["cam_rect"] or exclusion.cam_seed_frac(zones, src_w, src_h)
+    if not rect:
+        raise ValueError("cam bench: no cam rectangle (not a known VOD and the generic detector gave none)")
+    generic = gen["generic"]
+    cam = gen["cam"] if generic else render_clip.seeded_cam(media, start, dur, rect, src_w, src_h, log)
     if cam is None:
         raise ValueError("no facecam verified in the cam zone: no real crops to benchmark")
-    boxes, region = pick_boxes(cam, rect, src_w, src_h, fps, dur, n_frames)
+    boxes, region = pick_boxes(cam, rect, src_w, src_h, fps, dur, n_frames, region=gen["region"], full=generic)
     log(f"cam region {region}, crop {boxes[0]['w']}x{boxes[0]['h']} px (x{cam_sr.SCALE} = "
         f"{boxes[0]['w'] * cam_sr.SCALE}x{boxes[0]['h'] * cam_sr.SCALE}), {len(boxes)} sample frames")
 

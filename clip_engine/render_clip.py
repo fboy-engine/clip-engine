@@ -15,8 +15,8 @@ from fractions import Fraction
 
 import numpy as np
 
-from . import (asr_fix, balance, caption_lane, caption_sources, captions, captions_pass, cam_enhance, cam_layout, cam_sr, config, download, exclusion, hooks,
-               layout, select_clean, srcinfo, subject, track, transcribe, trim, vision)
+from . import (asr_fix, balance, caption_lane, caption_sources, captions, captions_pass, cam_enhance, cam_layout, camfind, camresolve, cam_sr, config,
+               download, exclusion, hooks, layout, select_clean, srcinfo, subject, track, transcribe, trim, vision)
 from .cropplan import punch_curve, smooth
 
 OUT_W, OUT_H = config.OUT_W, config.OUT_H
@@ -262,7 +262,7 @@ def clip_file_info(path, probe=None):
 def summary_md(r):
     """Run-summary text: source format and bitrate, the clip file (sha256, resolution, bitrate) and the cam block numbers.
     Empty string when render.json has none of it."""
-    if not r or not (r.get("source_format") or r.get("clip_file") or r.get("cam_quality")):
+    if not r or not (r.get("source_format") or r.get("clip_file") or r.get("cam_quality") or r.get("rendered_gate")):
         return ""
     L = ["### Source and clip"]
     sf = r.get("source_format")
@@ -273,6 +273,14 @@ def summary_md(r):
         br = f"{cf['video_kbps']} kbps" if cf.get("video_kbps") else "bitrate unknown"
         L += [f"- clip.mp4: {cf.get('width')}x{cf.get('height')} {cf.get('fps')} fps, {br}, {cf.get('size_mb')} MB",
               f"- clip.mp4 sha256: `{cf.get('sha256')}`"]
+    cf2, rg = r.get("cam_find"), r.get("rendered_gate")
+    if cf2:
+        L += ["", "### Cam find and rendered gate",
+              f"- cam: {'generic detector' if cf2.get('generic') else 'given / known layout'}, rect {cf2.get('rect_px')}, "
+              f"region used {cf2.get('region_px')}, confidence {cf2.get('confidence')}, zones {sorted((cf2.get('zones') or {}).keys())}"]
+    if rg:
+        L.append(f"- rendered gate: **{'PASS' if rg.get('ok') else 'FAIL'}** on {len(rg.get('frames') or [])} frames"
+                 + ("" if rg.get("ok") else " - " + "; ".join(rg.get("reasons") or [])))
     cq = r.get("cam_quality")
     if cq:
         e, o = cq.get("enhanced") or {}, cq.get("lanczos") or {}
@@ -519,6 +527,14 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         if not cam_rect and (cam_corner or "").strip().lower() != "none":
             cam_rect = exclusion.cam_seed_frac(zones, src_w, src_h)     # seed; the face check below verifies it
             log(f"cam seed from the stream's cam zone: {cam_rect}")
+    # A3: nothing given and no known VOD -> the generic detector decides the cam, chat and overlay zones (or the render refuses with
+    # its reasons: no guess). cam_rect / known zones / a named corner keep the legacy path. out/cam_find.jpg + .json on every run.
+    gen = camresolve.resolve(media, start, max(min(end, pr["duration"] - 0.05) - start, 1.0), src_w, src_h, out_dir, zones, cam_rect,
+                             cam_corner, log)
+    generic = gen["generic"]
+    if generic:
+        cam_rect, zones = gen["cam_rect"], gen["zones"]
+        log("overlay zones found in the picture: " + ", ".join(sorted(zones)))
     # cam diagnostics FIRST, on the whole moment, written even when the render fails later
     diag = write_cam_diag(media, start, min(end, pr["duration"] - 0.05), src_w, src_h, out_dir, cam_rect, log)
     meta = None
@@ -554,13 +570,14 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         smp = vision.sample(media, s_f, dur, src_w, src_h, corners)
         cam, cam_search = vision.choose_cam(smp["faces"], smp["n"], src_w, src_h) if corners else (None, {})
         if cam_rect and mode != "none":
-            cam = seeded_cam(media, s_f, dur, cam_rect, src_w, src_h, log)
-            cam_search = {"seeded": True, "verify": cam["verify"] if cam else None}
+            cam = gen["cam"] if generic else seeded_cam(media, s_f, dur, cam_rect, src_w, src_h, log)
+            cam_search = {"seeded": True, "generic": generic, "verify": cam["verify"] if cam else None}
         use_cam = cam is not None
         if not use_cam and (mode != "none" or zones):
             raise ValueError("no facecam verified (a large, stable face in the cam region on the sampled frames): "
                              "refusing the clip, there is no full-frame fallback")
         rect = (tuple(cam_rect) if cam_rect else cam["rect"]) if use_cam else None
+        cam_region = (gen["region"] if generic else layout.region_px(rect, src_w, src_h)) if use_cam else None
         aspect = layout.PANEL_ASPECT if use_cam else 9 / 16
         pw = layout.panel_wh(src_w, src_h)[0] if use_cam else src_h * 9 / 16
         bounds = panel_bounds(rect, zones, src_w, pw)
@@ -601,9 +618,9 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         cam_info = {"found": use_cam, "mode": mode, "search": cam_search}
         if use_cam:
             path = layout.face_path(cam["obs"], n, fps)
-            cbx = layout.cam_boxes(path, layout.region_px(rect, src_w, src_h))
+            cbx = layout.cam_boxes(path, cam_region, full=generic)
             cam_info.update({"corner": cam["corner"], "face_hit_pct": cam["hit_pct"], "face_w_px": round(path[2], 1),
-                             "rect": list(rect), "box_px": [round(cbx[0][2]), round(cbx[0][3])],
+                             "rect": list(rect), "generic": generic, "region_px": list(cam_region), "box_px": [round(cbx[0][2]), round(cbx[0][3])],
                              "upscale": round(layout.upscale(cbx), 2)})
         stats["layout"] = "cam_top" if use_cam else "full"
         stats["cam_block"] = cam_info
@@ -634,7 +651,7 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
 
     # captions: second sources + rescue pass on the FINAL cut; the ASS is rebuilt from the verified words
     t = time.monotonic()
-    avoid = [tuple(z) for z in zones.values()] + ([layout.region_px(rect, src_w, src_h)] if use_cam else [])
+    avoid = [tuple(z) for z in zones.values()] + ([tuple(cam_region)] if use_cam else [])
     cw_u = [w for w in asr_fix.to_clip_time(words, s_f) if w["s"] < dur]
     for w in cw_u:
         w["e"] = min(w["e"], dur)
@@ -667,7 +684,7 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
             up = cam_sr.make(b3["method"]).load()
         except cam_sr.ModelError as e:
             raise ValueError(f"cam enhance: {b3['method']} is unavailable ({e}): refusing the clip, plain lanczos is not shipped")
-        cam_stream, cam_prep = cam_enhance.prepare(media, s_f, dur, fps, fps_arg(fps), cbx, layout.region_px(rect, src_w, src_h),
+        cam_stream, cam_prep = cam_enhance.prepare(media, s_f, dur, fps, fps_arg(fps), cbx, tuple(cam_region),
                                                    (src_w, src_h), b3, up, log)
         probe = cam_enhance.new_probe(n)
         timings["cam_prep_sec"] = round(time.monotonic() - t, 1)
@@ -676,13 +693,28 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
     short = render_frames(media, s_f, n, fps, bxs, src_w, src_h,
                           encode_cmd(media, s_f, dur, ass_path, out_path, fps, af, preset=preset),
                           os.path.join(out_dir, "encode.log"), cbx,
-                          layout.region_px(rect, src_w, src_h) if use_cam else None, cam_stream, probe)
+                          tuple(cam_region) if use_cam else None, cam_stream, probe)
     timings["render_sec"] = round(time.monotonic() - t, 1)
     audio_final = final_true_peak(media, s_f, dur, out_path, ln, log)
     if not audio_final["ok"]:
         raise ValueError(f"true peak {audio_final['tp']} dBFS is above {config.TRUE_PEAK:g} after "
                          f"{len(audio_final['passes'])} measurements: refusing the clip")
 
+    # A3: the gate on the RENDERED pixels: k frames of the finished clip are traced back into the source; the gameplay panel must
+    # come from source columns clear of the cam, chat and overlay zones, the cam block from inside the cam. No trace = no pass.
+    rgate = None
+    if use_cam:
+        t = time.monotonic()
+        cam_px = tuple(float(v) for v in (gen["rect_px"] if generic else cam_region))
+        gz = {k: tuple(float(v) for v in z) for k, z in (zones or {}).items()}
+        gz.setdefault("cam", cam_px)
+        pws = [OUT_W / b[2] for b in bxs]
+        panel_scales = [float(v) for v in np.linspace(min(pws) * 0.97, max(pws) * 1.03, 9)]
+        cam_scales = [float(OUT_W / cbx[0][2] * f) for f in (0.94, 0.97, 1.0, 1.03, 1.06)]
+        rgate = camfind.rendered_gate(media, out_path, s_f, dur, src_w, src_h, gz, cam_px, panel_scales, cam_scales)
+        timings["rendered_gate_sec"] = round(time.monotonic() - t, 1)
+        log(f"rendered gate: {'PASS' if rgate['ok'] else 'FAIL'} on {len(rgate.get('frames') or [])} frames"
+            + ("" if rgate["ok"] else ": " + "; ".join(rgate["reasons"])))
     cam_quality = cam_enhance.quality_report(cam_stream, cam_prep, probe) if cam_stream is not None else None
     if probe and probe["pairs"]:
         n_cmp = cam_enhance.write_compare(probe, os.path.join(out_dir, "cam_compare.png"),
@@ -700,19 +732,29 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
          "hook": {"text": hook, "source": hook_src, "match": hook_match}, "trim": trim_info, "words": len(cw), "asr": meta, "notes": notes,
          "word_spans": [[round(w["s"], 3), round(w["e"], 3)] for w in cw],
          "source_format": source_format, "clip_file": clip_file,
-         "cam_diag": diag, "crop_points": pts,
+         "cam_diag": diag, "crop_points": pts, "rendered_gate": rgate,
+         "cam_find": {"generic": generic, "rect_px": list(gen["rect_px"]) if generic else None,
+                      "region_px": list(cam_region) if use_cam else None,
+                      "confidence": gen["detect"]["confidence"] if generic else None, "zones": {k: list(v) for k, v in (zones or {}).items()}},
          "cam_scale": {"upscale": cam_info.get("upscale"), "box_px": cam_info.get("box_px"),
                        "chain": cam_quality["chain"] if cam_quality else "none (no cam block)"}, "cam_quality": cam_quality, "loudnorm_input": ln, "audio_final": audio_final, "timings": timings,
          "encode": {"codec": "libx264", "crf": config.CRF, "preset": preset},
          "captions_check": captions_pass.summary(cap_check),
          "grade_inputs": {"captions_check": captions_pass.summary(cap_check), "cam_diag": diag, "audio_inputs": 1, "audio_filters": list(AUDIO_FILTERS), "trim": trim_info,
-                          "hook": {"text": hook, "source": hook_src, "match": hook_match}, "cam_quality": cam_quality, **stats}}
+                          "hook": {"text": hook, "source": hook_src, "match": hook_match}, "cam_quality": cam_quality,
+                          "rendered_gate": rgate, **stats}}
     with open(os.path.join(out_dir, "render.json"), "w") as f:
         json.dump(r, f, indent=1)
+    lj = layout.layout_report(src_w, src_h, rect, cam_info, bxs, stats.get("exclusion"))
+    lj["cam_find"] = r["cam_find"]
+    lj["rendered_gate"] = rgate
     with open(os.path.join(out_dir, "layout.json"), "w") as f:
-        json.dump(layout.layout_report(src_w, src_h, rect, cam_info, bxs, stats.get("exclusion")), f, indent=1)
+        json.dump(lj, f, indent=1)
     timings["total_sec"] = round(time.monotonic() - t0, 1)
     log(f"rendered {out_path} in {timings['render_sec']}s (total {timings['total_sec']}s)")
+    if rgate is not None and not rgate["ok"]:      # A3 gate: render.json / layout.json (with the numbers) are on disk, now refuse
+        raise ValueError("rendered output gate failed (cam/chat/overlay pixels in the gameplay panel, or the cam block is not the cam): "
+                         + "; ".join(rgate["reasons"]))
     if cam_quality:                     # B3 gate: the diagnostics above are already on disk; now refuse a clip that fails it
         q_ok, q_reasons = cam_sr.quality_verdict(cam_quality)
         if not q_ok:

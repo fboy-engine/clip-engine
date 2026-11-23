@@ -7,7 +7,7 @@ from unittest import mock
 
 import numpy as np
 
-from clip_engine import camfind, camresolve, layout
+from clip_engine import camfind, camresolve, layout, render_clip
 
 LAUREN = {"width": 1920, "height": 1080, "frames": 24,
           "cam": {"rect_px": [1304, 0, 1920, 424], "rect_frac": [0.6792, 0.0, 1.0, 0.3926], "confidence": 0.989,
@@ -107,6 +107,17 @@ class Resolve(unittest.TestCase):
                 r = camresolve.resolve("m.mp4", 0.0, 36.0, 1920, 1080, d, zones, None, corner, log=lambda *a: None)
                 self.assertFalse(dm.called or r["generic"])
                 self.assertTrue(_load(d)["source"].startswith(why))
+
+
+class Summary(unittest.TestCase):
+    def test_run_summary_shows_the_cam_find_and_the_rendered_gate(self):
+        r = {"cam_find": {"generic": True, "rect_px": [1304, 0, 1920, 424], "region_px": [1307, 0, 1920, 421], "confidence": 0.989,
+                          "zones": {"cam": [1304, 0, 1920, 424], "chat": [1728, 424, 1920, 1074]}},
+             "rendered_gate": {"ok": False, "reasons": ["frame 2: panel overlaps zone cam"], "frames": [{}, {}]}}
+        s = render_clip.summary_md(r)
+        self.assertIn("generic detector", s)
+        self.assertIn("rendered gate: **FAIL** on 2 frames - frame 2: panel overlaps zone cam", s)
+        self.assertEqual(render_clip.summary_md({}), "")
 
 
 if __name__ == "__main__":

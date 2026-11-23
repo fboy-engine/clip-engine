@@ -54,3 +54,15 @@ After each stage: commit sha to the user, ask for a cache_only=true verification
 
 ## PART A (editing fixes, this Claude)
 - A1a+A1b: captions_verify.py (15c? tests, commit 15e04e9) = verify each large-v3 word against Gemini audio text and OCR of game subtitles (OCR preferred for lines that match the speech), insert words missed by VAD into speech gaps, coverage>=90% of speech seconds + zero unresolved gate, data for out/captions_check.json. hooks.phrase_hook (whole sentence/clause <=6 words, never a piece or copy of caption 1; hook no longer removes words from captions) wired in render_clip.build_ass. NOT YET WIRED into render(): Gemini audio call, OCR, rescue ASR pass, captions_check.json, grader checks (A1c).
+
+## RESUME POINT (2026-11-23, session 2)
+Origin main was b82c3a3 when this session started. A previous session's A1c work (caption_sources.py OCR/rescue/Gemini-audio,
+captions_pass.py, render() wiring, grader check_caption_words, clip.yml tesseract step) was written in a Composio workbench
+sandbox that was reset before any push: NOTHING of it is on origin. It is being rebuilt and pushed unit by unit.
+Order (user): A1c -> A3 (side cam, Twitch source, any streamer) -> A2 tracking >= 85% gate -> A4 docs/reference_clip.json
+(finder tie-breaker only) -> C sharpness gate -> verification run on the first Lauren Twitch clip
+https://m.twitch.tv/laurenhamdenn/clip/GoldenSincereHamburgerHeyGuys-Zo31y1z1tLdwRScS (dry_run true, warp false, cookies false;
+cache_only cannot hit on a never-downloaded Twitch URL, so the first run needs cache_only=false, still no YouTube/Instagram call).
+Rules: repo fboy-engine/clip-engine only, account github_corral-fowler, author 240231847+fboy-engine@users.noreply.github.com,
+small commits, dry_run on, permanent layout/edit rules unchanged. Sandbox files do not survive: push each unit before the next.
+Units done: (none yet, see git log). Next unit: A1c-1 caption_sources.py (+tests).

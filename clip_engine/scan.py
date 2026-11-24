@@ -31,6 +31,15 @@ def _candidate_rect(info):
     return best
 
 
+def _lines(ev, k=40):
+    """Persistent lines as compact lists (the evidence the decision was made from), strongest first."""
+    out = {}
+    for key in ("vlines", "hlines"):
+        ls = sorted((ev or {}).get(key) or [], key=lambda l: -(l.get("persist", 0) * l.get("strength", 0)))[:k]
+        out[key] = [{kk: (round(v, 2) if isinstance(v, float) else v) for kk, v in l.items()} for l in ls]
+    return out
+
+
 def _draw(img, rect, color, label):
     import cv2
     x0, y0, x1, y1 = [int(round(v)) for v in rect]
@@ -57,10 +66,11 @@ def scan_frames(color_frames, face_fn=None, name=""):
         faces = r["cam"]["faces_in_rect"]
         res.update(ok=True, method=r["method"], rect_px=rect, rect_frac=r["cam"]["rect_frac"], confidence=r["confidence"],
                    face_hit_pct=r.get("face_hit_pct") or (round(100 * max(f["hit"] for f in faces), 1) if faces else 0.0),
-                   reasons=[], zones={k: [round(v) for v in z] for k, z in r["zones"].items()})
+                   reasons=[], zones={k: [round(v) for v in z] for k, z in r["zones"].items()},
+                   lines=_lines(r.get("evidence")), faces=(r.get("evidence") or {}).get("faces", [])[:4])
         color, label = (0, 220, 0), f"{r['method']} {r['confidence']}"
     except camfind.CamNotConfident as e:
-        res.update(error=str(e)[:900])
+        res.update(error=str(e)[:900], lines=_lines((e.info or {}).get("stable_overlay") or e.info), faces=((e.info or {}).get("faces") or [])[:4])
         c = _candidate_rect(e.info)
         rect = None
         if c:

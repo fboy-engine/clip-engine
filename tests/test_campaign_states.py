@@ -30,8 +30,8 @@ class TransitionTests(unittest.TestCase):
         states.transition(i, "DONE")
         self.assertEqual(i.state, "DONE")
 
-    def test_all_seven_states_exist(self):
-        self.assertEqual(states.STATES, ("QUEUED", "EDITING", "READY", "AWAITING_APPROVAL", "POSTING", "POSTED", "DONE"))
+    def test_all_states_exist(self):
+        self.assertEqual(states.STATES, ("QUEUED", "EDITING", "READY", "AWAITING_APPROVAL", "POSTING", "POSTED", "DONE", "SKIPPED"))
 
     def test_illegal_jumps(self):
         for frm, to in (("QUEUED", "READY"), ("QUEUED", "POSTING"), ("READY", "POSTING"), ("READY", "POSTED"),
@@ -169,3 +169,24 @@ class QueueTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SkippedTests(unittest.TestCase):
+    def test_skipped_never_blocks_head(self):
+        from campaign_lib.states import Item, head, all_used, transition
+        a, b = Item(n=1, source="a"), Item(n=2, source="b")
+        transition(a, "EDITING")
+        transition(a, "SKIPPED")
+        self.assertIs(head([a, b]), b)
+        transition(b, "SKIPPED")
+        self.assertTrue(all_used([a, b]))
+
+    def test_skipped_is_final_and_only_from_queued_or_editing(self):
+        from campaign_lib.states import Item, transition, StateError
+        a = Item(n=1, source="a")
+        transition(a, "SKIPPED")
+        with self.assertRaises(StateError):
+            transition(a, "EDITING")
+        r = Item(n=2, source="r", state="READY", caption="x")
+        with self.assertRaises(StateError):
+            transition(r, "SKIPPED")

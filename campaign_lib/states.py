@@ -11,16 +11,17 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
 
-STATES = ("QUEUED", "EDITING", "READY", "AWAITING_APPROVAL", "POSTING", "POSTED", "DONE")
+STATES = ("QUEUED", "EDITING", "READY", "AWAITING_APPROVAL", "POSTING", "POSTED", "DONE", "SKIPPED")
 
 ALLOWED = {
-    "QUEUED": {"EDITING"},
-    "EDITING": {"READY", "QUEUED"},
+    "QUEUED": {"EDITING", "SKIPPED"},
+    "EDITING": {"READY", "QUEUED", "SKIPPED"},
     "READY": {"AWAITING_APPROVAL", "EDITING"},
     "AWAITING_APPROVAL": {"POSTING", "READY"},
     "POSTING": {"POSTED", "AWAITING_APPROVAL"},  # back to AWAITING_APPROVAL = upload failed, tick again
     "POSTED": {"DONE"},
     "DONE": set(),
+    "SKIPPED": set(),  # failed a gate / no confident cam: the reason is in the note, the queue moves on
 }
 
 
@@ -72,9 +73,9 @@ def submit_before(item, window_min):
 
 
 def head(items):
-    """The clip the campaign is working towards: first one that is not POSTED/DONE."""
+    """The clip the campaign is working towards: first one that is not POSTED/DONE/SKIPPED."""
     for i in sorted(items, key=lambda x: x.n):
-        if i.state not in ("POSTED", "DONE"):
+        if i.state not in ("POSTED", "DONE", "SKIPPED"):
             return i
     return None
 

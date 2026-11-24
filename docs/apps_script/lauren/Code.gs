@@ -140,11 +140,11 @@ function itemsOf_(queue) {
   return items;
 }
 
-/** Same rule as campaign_lib/states.py head(): first item that is not POSTED/DONE. */
+/** Same rule as campaign_lib/states.py head(): first item that is not POSTED/DONE/SKIPPED. */
 function headOf_(items) {
   for (var i = 0; i < items.length; i++) {
     var st = String(items[i].state);
-    if (st !== 'POSTED' && st !== 'DONE') return items[i];
+    if (st !== 'POSTED' && st !== 'DONE' && st !== 'SKIPPED') return items[i];
   }
   return null;
 }

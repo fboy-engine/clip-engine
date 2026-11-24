@@ -4,6 +4,8 @@
   python -m campaign_lib.cli probe  --sheet-id ID
   python -m campaign_lib.cli init   --sheet-id ID [--fake N]
   python -m campaign_lib.cli tick   --sheet-id ID [--fake] [--gap-min N] [--submit-min N]
+  python -m campaign_lib.cli loop   --sheet-id ID --slot a|b|w [--handoff-token T] [--fake] [--gap-min N] [--submit-min N]
+  python -m campaign_lib.cli watchdog --sheet-id ID
 
 No Instagram code is reachable from here."""
 import argparse
@@ -68,9 +70,26 @@ def cmd_tick(cfg, a):
     return 0
 
 
+def cmd_loop(cfg, a):
+    from . import service
+    t = {}
+    if a.gap_min is not None:
+        t["approve_gap_min"] = a.gap_min
+    if a.submit_min is not None:
+        t["submit_window_min"] = a.submit_min
+    return service.run_loop(cfg, _io(cfg, a), service.new_github(), a.slot, a.handoff_token, fake=a.fake, timings=t)
+
+
+def cmd_watchdog(cfg, a):
+    from . import service
+    return service.run_watchdog(cfg, _io(cfg, a), service.new_github())
+
+
 def main(argv=None):
     p = argparse.ArgumentParser()
-    p.add_argument("cmd", choices=["secrets", "probe", "init", "tick"])
+    p.add_argument("cmd", choices=["secrets", "probe", "init", "tick", "loop", "watchdog"])
+    p.add_argument("--slot", default="w", choices=["a", "b", "w"])
+    p.add_argument("--handoff-token", default="")
     p.add_argument("--campaign", default="lauren-hamden")
     p.add_argument("--sheet-id", default="")
     p.add_argument("--fake", nargs="?", const=-1, type=int, default=0)
@@ -78,10 +97,11 @@ def main(argv=None):
     p.add_argument("--submit-min", type=float, default=None)
     a = p.parse_args(argv)
     cfg = config.load(a.campaign)
-    if a.cmd == "tick":
+    if a.cmd in ("tick", "loop"):
         a.fake = a.fake != 0
     try:
-        return {"secrets": cmd_secrets, "probe": cmd_probe, "init": cmd_init, "tick": cmd_tick}[a.cmd](cfg, a)
+        return {"secrets": cmd_secrets, "probe": cmd_probe, "init": cmd_init, "tick": cmd_tick,
+                "loop": cmd_loop, "watchdog": cmd_watchdog}[a.cmd](cfg, a)
     except (composio.ComposioError, ValueError) as e:
         print("ERROR:", e)
         return 1

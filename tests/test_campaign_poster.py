@@ -220,25 +220,58 @@ class TwoLoopsRacing(unittest.TestCase):
         self.assertEqual(state_of(io).state, "POSTING")
 
 
-class RealItemsStayBlocked(unittest.TestCase):
-    def test_real_item_never_reaches_posting_or_an_uploader(self):
-        it = Item(n=1, source="https://m.twitch.tv/x/clip/AbC", kind="clip", state="AWAITING_APPROVAL")
+class RealItemsNeedTheSwitch(unittest.TestCase):
+    def real_item(self, n=1):
+        it = Item(n=n, source="https://m.twitch.tv/x/clip/AbC", kind="clip", state="AWAITING_APPROVAL")
         it.caption = "cap"
-        io = MemIO([it], {"approve": True})
+        return it
 
+    def boom(self):
         class Boom(poster.FakeUploader):
             def post(self, item, token):
                 raise AssertionError("a real upload was attempted")
+        return Boom()
 
-        out = runner.tick(io, CFG, NOW, uploader=Boom())  # allow_real_upload not set
+    def test_switch_off_means_dry_run_only(self):
+        io = MemIO([self.real_item()], {"approve": True})
+        out = runner.tick(io, CFG, NOW, uploader=self.boom())
         self.assertEqual(state_of(io).state, "AWAITING_APPROVAL")
         self.assertFalse(io.cells["approve"])
-        self.assertTrue(any(e == "POST_BLOCKED" for e, _ in out["log"]))
+        self.assertTrue(any(e == "POST_DRYRUN" for e, _ in out["log"]))
 
-    def test_real_uploader_path_is_idempotent_when_explicitly_enabled(self):
-        it = Item(n=1, source="https://m.twitch.tv/x/clip/AbC", kind="clip", state="AWAITING_APPROVAL")
-        it.caption = "cap"
-        io = MemIO([it], {"approve": True})
+    def test_switch_for_another_clip_does_not_post_this_one(self):
+        io = MemIO([self.real_item(1)], {"approve": True, "real_upload": "ONE:2"})
+        runner.tick(io, CFG, NOW, uploader=self.boom())
+        self.assertEqual(state_of(io).state, "AWAITING_APPROVAL")
+        self.assertEqual(io.cells["real_upload"], "ONE:2")  # untouched: not this clip's switch
+
+    def test_garbage_switch_values_never_post(self):
+        for raw in ("TRUE", "ALL", "ONE:", "1", "ONE:1,2"):
+            io = MemIO([self.real_item()], {"approve": True, "real_upload": raw})
+            runner.tick(io, CFG, NOW, uploader=self.boom())
+            self.assertEqual(state_of(io).state, "AWAITING_APPROVAL", raw)
+
+    def test_switch_posts_exactly_one_clip_and_is_cleared_before_the_upload(self):
+        io = MemIO([self.real_item(1), self.real_item(2)], {"approve": True, "real_upload": "ONE:1"})
+        seen = {}
+
+        class Real(poster.FakeUploader):
+            def post(self, item, token):
+                seen["switch_when_uploading"] = io.cells["real_upload"]
+                return super().post(item, token)
+
+        out = runner.tick(io, CFG, NOW, uploader=Real())
+        self.assertEqual(seen["switch_when_uploading"], "")
+        self.assertEqual(state_of(io, 1).state, "POSTED")
+        self.assertEqual(io.cells["real_upload"], "")
+        # next clip: tick again after the gap, the switch is gone -> dry-run only
+        io.items[1].state = "AWAITING_APPROVAL"
+        io.cells["approve"] = True
+        runner.tick(io, CFG, NOW + timedelta(hours=3), uploader=self.boom())
+        self.assertEqual(state_of(io, 2).state, "AWAITING_APPROVAL")
+
+    def test_real_uploader_path_is_idempotent_when_the_switch_is_on(self):
+        io = MemIO([self.real_item()], {"approve": True, "real_upload": "ONE:1"})
 
         class Real(poster.FakeUploader):
             def post(self, item, token):
@@ -246,10 +279,20 @@ class RealItemsStayBlocked(unittest.TestCase):
                 raise poster.UploadAmbiguous("timeout")
 
         up = Real()
-        runner.tick(io, CFG, NOW, uploader=up, allow_real_upload=True)
-        runner.tick(io, CFG, NOW + timedelta(seconds=40), uploader=up, allow_real_upload=True)
-        runner.tick(io, CFG, NOW + timedelta(seconds=80), uploader=up, allow_real_upload=True)
+        runner.tick(io, CFG, NOW, uploader=up)
+        runner.tick(io, CFG, NOW + timedelta(seconds=40), uploader=up)
+        runner.tick(io, CFG, NOW + timedelta(seconds=80), uploader=up)
         self.assertEqual(up.calls, 1)
+        self.assertEqual(state_of(io).state, "POSTED")
+
+    def test_reconcile_can_find_a_post_even_after_the_switch_is_gone(self):
+        io = MemIO([self.real_item()], {"approve": False, "real_upload": ""})
+        it = io.items[0]
+        it.state = "POSTING"
+        it.note = poster.intent_note("p1-abc", "R", NOW)
+        up = poster.FakeUploader()
+        up.posts["p1-abc"] = ("M7", "https://www.instagram.com/reel/AbC/")
+        runner.tick(io, CFG, NOW + timedelta(seconds=30), uploader=up)
         self.assertEqual(state_of(io).state, "POSTED")
 
 

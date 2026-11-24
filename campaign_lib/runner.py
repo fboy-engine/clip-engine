@@ -7,7 +7,7 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from . import caption as capmod
-from . import poster, sheet, states
+from . import instagram, poster, sheet, states
 from .states import Item
 
 
@@ -65,28 +65,37 @@ def render_cells(items, now, timings, tz, sheet_title=None):
 
 
 class Router:
-    """Fake items go to the fake uploader. A real item only ever reaches a real uploader when
-    allow_real is set (never in this build: the CLI does not pass it)."""
+    """Fake items go to the fake uploader. A real item reaches the Instagram uploader for a POST only when
+    real_n (parsed from the Campaign cell real_upload, "ONE:<n>") names exactly this clip. find() is read-only,
+    so a restart can always settle a post that may have gone through."""
 
-    def __init__(self, fake, real=None, allow_real=False):
-        self.fake, self.real, self.allow_real = fake, real, allow_real
+    def __init__(self, fake, real=None, real_n=None):
+        self.fake, self.real, self.real_n = fake, real, real_n
 
-    def _pick(self, item):
-        if item.kind == "fake":
-            return self.fake
-        if self.allow_real and self.real is not None:
-            return self.real
-        raise RuntimeError("uploader not enabled")
+    def can_post(self, item):
+        return item.kind == "fake" or (self.real is not None and self.real_n == item.n)
 
     def post(self, item, token):
-        return self._pick(item).post(item, token)
+        if item.kind == "fake":
+            return self.fake.post(item, token)
+        if not self.can_post(item):
+            raise RuntimeError("uploader not enabled")
+        self.real.real = True
+        try:
+            return self.real.post(item, token)
+        finally:
+            self.real.real = False
 
     def find(self, item, token, since):
-        return self._pick(item).find(item, token, since)
+        if item.kind == "fake":
+            return self.fake.find(item, token, since)
+        if self.real is None:
+            raise RuntimeError("uploader not enabled")
+        return self.real.find(item, token, since)
 
 
 def tick(io, cfg, now, fake=False, timings=None, guard=None, extra_values=None, extra_log=None,
-         uploader=None, fake_uploader=None, allow_real_upload=False, run_id=""):
+         uploader=None, fake_uploader=None, run_id=""):
     """One pass. Returns a dict summary. `timings` overrides approve_gap_min / submit_window_min (tests only).
 
     guard(cells, now): called on every fresh read (and again before an upload); it raises to stop the pass
@@ -101,7 +110,8 @@ def tick(io, cfg, now, fake=False, timings=None, guard=None, extra_values=None, 
     items, cells = snap.items, snap.cells
     log, all_log, notes, out = list(extra_log or []), [], [], {}
     log_rows = [int(cells.get("log_rows") or 1)]
-    router = Router(fake_uploader or poster.FakeUploader(), uploader, allow_real_upload)
+    real_n = instagram.parse_switch(cells.get("real_upload"))
+    router = Router(fake_uploader or poster.FakeUploader(), uploader, real_n)
     ticked = lambda v: v is True or str(v).strip().upper() == "TRUE"
     approve = ticked(cells.get("approve"))
     confirm = ticked(cells.get("add_confirm"))
@@ -145,9 +155,12 @@ def tick(io, cfg, now, fake=False, timings=None, guard=None, extra_values=None, 
     by_n = {i.n: i for i in items}
     final = []
     for a, n in acts:
-        if a == "POST" and by_n[n].kind != "fake" and not (allow_real_upload and uploader is not None):
+        if a == "POST" and not router.can_post(by_n[n]):
             final.append(("CLEAR_TICK", n))
-            log.append(("POST_BLOCKED", "clip #%d: uploader not enabled (waits for 'test upload now')" % n))
+            log.append(("POST_DRYRUN", "clip #%d: real upload switch is off, nothing sent (waits for 'test upload now')" % n))
+            if uploader is not None and hasattr(uploader, "plan"):
+                for line in uploader.plan(by_n[n]):
+                    log.append(("DRYRUN_REQUEST", line))
         else:
             final.append((a, n))
     states.apply(items, final, now)
@@ -156,6 +169,13 @@ def tick(io, cfg, now, fake=False, timings=None, guard=None, extra_values=None, 
             log.append((a, "clip #%s" % n))
         if a in ("CLEAR_TICK", "POST"):
             write_vals["approve"] = False
+        if a == "POST":
+            if by_n[n].kind == "fake":
+                for line in instagram.plan_lines(by_n[n].caption, "fake"):
+                    log.append(("DRYRUN_REQUEST", line))
+            else:
+                write_vals["real_upload"] = ""  # the switch is single-use: gone before the upload starts
+                log.append(("REAL_UPLOAD", "clip #%d: switch used (cleared), uploading" % n))
         if a == "CLEAR_TICK":
             log.append(("TICK_CLEARED", "APPROVE ticked while nothing was waiting for approval"))
 

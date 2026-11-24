@@ -42,6 +42,15 @@ class DropStatic(unittest.TestCase):
         self.assertEqual(len(static), 1)
         self.assertLess(static[0]["cx"], 0.2)
 
+    def test_screen_fixed_player_with_a_moving_world_behind_is_kept(self):
+        rng = np.random.RandomState(3)
+        g = rng.rand(N, H, W).astype(np.float32) * 120          # busy world: every pixel changes
+        g[:, 30:110, 100:140] = rng.rand(N, 80, 40).astype(np.float32) * 45   # a follow-cam player: fixed place, about a third of the motion
+        box = (100 / W, 30 / H, 140 / W, 110 / H, 0.8)
+        out, info = subject.drop_static([[box] for _ in range(N)], g, subject.playable_mask(H, W, []))
+        self.assertTrue(all(len(d) == 1 for d in out))
+        self.assertFalse(any(c["static"] for c in info))
+
     def test_too_few_hits_are_never_called_static(self):
         g = scene()
         play = subject.playable_mask(H, W, MASKS)

@@ -164,7 +164,7 @@ def track_subject(dets, hold=HOLD_SAMPLES, window=WINDOW, ratio=SWITCH_RATIO):
 
 
 STATIC_ABS = 1.5            # mean gray step (0..255) under a box below which nothing moves there
-STATIC_REL = 0.5            # ... or below this share of the motion of the playable area
+STATIC_REL = 0.15           # ... or below this share of the motion of the playable area (overlay art is nearly frozen; a follow-cam player is not)
 STATIC_MIN_HITS = 5         # a cluster needs this many detections before it can be called static
 STATIC_SPREAD = 0.012       # std of the box centre x (fraction of the frame width) of a static cluster
 MOTION_MIN = 0.8            # mean gray step of the playable area below which there is no motion mass to follow

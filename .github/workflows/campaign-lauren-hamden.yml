@@ -1,12 +1,20 @@
-# Lauren Hamden campaign. Own file, own concurrency group, never touches clip.yml.
-# Manual trigger only. No Instagram call exists in any mode here.
+# Lauren Hamden campaign. Own file, own concurrency groups, never touches clip.yml.
+# Modes:
+#   loop      = the engine: ONE run ticks every 30-60 s, hands over to a successor at about 5 h 30 min (the
+#               successor goes into the OTHER slot, so both overlap and there is no gap), hard stop before 6 h.
+#               Never renders: rendering is a separate clip.yml run that the loop dispatches and polls.
+#   watchdog  = cron entry only. Starts a loop when no heartbeat is alive and STOP is not set. Never loops itself.
+#   secrets / probe / init / tick / linkcheck = short manual helpers.
+# No Instagram call exists in any mode here until the user types the sheet's one-clip switch ("test upload now").
 name: campaign-lauren-hamden
 
 on:
+  schedule:
+    - cron: "*/15 * * * *"   # watchdog ONLY (a restart net for a dead loop); the loop does the work
   workflow_dispatch:
     inputs:
       mode:
-        description: "linkcheck = metadata-only probe of the 10 sources | secrets = set/NOT SET only | probe = read the sheet via Composio | init = write the sheet layout | tick = one loop pass"
+        description: "loop = the engine | watchdog = start a loop only if none is alive | secrets | probe | init | tick | linkcheck"
         required: true
         default: secrets
         type: choice
@@ -16,39 +24,57 @@ on:
           - init
           - tick
           - linkcheck
+          - loop
+          - watchdog
+      slot:
+        description: "loop: concurrency slot (a, b, w). Set by the engine itself; leave w when starting by hand"
+        required: false
+        default: w
+        type: choice
+        options:
+          - w
+          - a
+          - b
+      handoff_token:
+        description: "loop: set by the engine itself when it hands over; leave empty"
+        required: false
+        default: ""
+        type: string
       sheet_id:
         description: "Google Sheet id (empty = campaign.json sheet.id)"
         required: false
         default: ""
         type: string
       fake:
-        description: "init: number of FAKE clips to load (0 = the real 10 sources). tick: 1 = fake clips only, 0 = real"
+        description: "init: number of FAKE clips to load (0 = the real sources). tick / loop: 1 = fake clips only, 0 = real"
         required: false
         default: "0"
         type: string
       gap_min:
-        description: "tick, tests only: override the 150 min approve gap"
+        description: "tick / loop, tests only: override the 150 min approve gap"
         required: false
         default: ""
         type: string
       submit_min:
-        description: "tick, tests only: override the 30 min submit window"
+        description: "tick / loop, tests only: override the 30 min submit window"
         required: false
         default: ""
         type: string
 
-concurrency:
-  group: campaign-lauren-hamden
-  cancel-in-progress: false
-
+# Groups are set per job (below). cancel-in-progress is false everywhere: a group holds ONE active run and ONE
+# waiting run, so a loop is never killed by a newer start; the lock in the sheet decides who really ticks.
 permissions:
   contents: read
+  actions: write   # the loop dispatches clip.yml and its own successor, and reads the render artifact
 
 jobs:
   cli:
-    if: ${{ inputs.mode != 'linkcheck' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && contains(fromJSON('["secrets","probe","init","tick"]'), inputs.mode) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: campaign-lauren-hamden-misc
+      cancel-in-progress: false
     env:
       MODE: ${{ inputs.mode }}
       SHEET_ID: ${{ inputs.sheet_id }}
@@ -87,10 +113,83 @@ jobs:
           cat cli.txt >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+  loop:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'loop' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 359   # the loop leaves at 5 h 55 min on its own (engine.HARD_STOP_S); GitHub's limit is 6 h
+    concurrency:
+      group: campaign-lauren-hamden-loop-${{ inputs.slot }}
+      cancel-in-progress: false
+    env:
+      SHEET_ID: ${{ inputs.sheet_id }}
+      SLOT: ${{ inputs.slot }}
+      HANDOFF_TOKEN: ${{ inputs.handoff_token }}
+      FAKE: ${{ inputs.fake }}
+      GAP_MIN: ${{ inputs.gap_min }}
+      SUBMIT_MIN: ${{ inputs.submit_min }}
+      GITHUB_TOKEN: ${{ github.token }}
+      IG_ACCESS_TOKEN_LAUREN: ${{ secrets.IG_ACCESS_TOKEN_LAUREN }}
+      IG_USER_ID_LAUREN: ${{ secrets.IG_USER_ID_LAUREN }}
+      COMPOSIO_API_KEY: ${{ secrets.COMPOSIO_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install yt-dlp (metadata probe only)
+        run: pip install -q -U yt-dlp
+      - name: Loop
+        shell: bash
+        run: |
+          args=(--slot "$SLOT")
+          [ -n "$SHEET_ID" ] && args+=(--sheet-id "$SHEET_ID")
+          [ -n "$HANDOFF_TOKEN" ] && args+=(--handoff-token "$HANDOFF_TOKEN")
+          [ "$FAKE" != "0" ] && [ -n "$FAKE" ] && args+=(--fake)
+          [ -n "$GAP_MIN" ] && args+=(--gap-min "$GAP_MIN")
+          [ -n "$SUBMIT_MIN" ] && args+=(--submit-min "$SUBMIT_MIN")
+          python -u -m campaign_lib.cli loop "${args[@]}" | tee loop.txt
+      - name: Summary
+        if: always()
+        run: |
+          echo "### campaign loop (slot $SLOT)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -c 20000 loop.txt >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  watchdog:
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'watchdog') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: campaign-lauren-hamden-watchdog
+      cancel-in-progress: false
+    env:
+      SHEET_ID: ${{ inputs.sheet_id }}
+      GITHUB_TOKEN: ${{ github.token }}
+      IG_ACCESS_TOKEN_LAUREN: ${{ secrets.IG_ACCESS_TOKEN_LAUREN }}
+      IG_USER_ID_LAUREN: ${{ secrets.IG_USER_ID_LAUREN }}
+      COMPOSIO_API_KEY: ${{ secrets.COMPOSIO_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Watchdog
+        shell: bash
+        run: |
+          args=()
+          [ -n "$SHEET_ID" ] && args+=(--sheet-id "$SHEET_ID")
+          python -m campaign_lib.cli watchdog "${args[@]}"
+
   linkcheck:
-    if: ${{ inputs.mode == 'linkcheck' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'linkcheck' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: campaign-lauren-hamden-misc
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

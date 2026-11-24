@@ -403,19 +403,26 @@ def draw_debug(color_frame, result, path):
     return path
 
 
+def detect_auto(gray, face_fn=None):
+    """Border-line detector first; when it is not confident, the stable-overlay rule on the same frames. Raises CamNotConfident
+    with both reasons (info keeps both candidate lists) when neither decides. Result has method: border_lines | stable_overlay."""
+    try:
+        res = detect(gray, face_fn=face_fn)
+        res["method"] = "border_lines"
+        return res
+    except CamNotConfident as e1:
+        from . import stable_overlay
+        try:
+            return stable_overlay.detect(gray, face_fn=face_fn)
+        except CamNotConfident as e2:
+            raise CamNotConfident(f"{e1} | stable-overlay fallback: {e2}", {**e1.info, "stable_overlay": e2.info}) from e2
+
+
 def detect_media(media, start, dur, w_src, h_src, n=N_SAMPLES, face_fn=None, debug_jpg=None):
     """Sample `n` frames of the window and run detect(). With `debug_jpg` the annotated middle frame is written."""
     times = sample_times(start, dur, n)
     gray = grab(media, times, w_src, h_src)
-    try:
-        res = detect(gray, face_fn=face_fn)
-        res["method"] = "border_lines"
-    except CamNotConfident as e1:           # no drawn border: fall back to the stable-overlay rule (same frames)
-        from . import stable_overlay
-        try:
-            res = stable_overlay.detect(gray, face_fn=face_fn)
-        except CamNotConfident as e2:
-            raise CamNotConfident(f"{e1} | stable-overlay fallback: {e2}", {**e1.info, "stable_overlay": e2.info}) from e2
+    res = detect_auto(gray, face_fn=face_fn)
     if debug_jpg:
         col = grab(media, [times[len(times) // 2]], w_src, h_src, color=True)
         draw_debug(col[0] if col else np.dstack([gray[len(gray) // 2]] * 3), res, debug_jpg)

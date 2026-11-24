@@ -7,7 +7,12 @@ on:
     inputs:
       url:
         description: YouTube stream URL (ended stream first) or a Twitch clip URL (whole clip, anonymous, no cookies, no WARP)
-        required: true
+        required: false
+        default: ""
+      scan_urls:
+        description: "Cam scan only: Twitch clip URLs (space or newline separated). Writes docs/scan_annotated, docs/scan and commits them. Leave url empty."
+        required: false
+        default: ""
       campaign:
         description: Campaign label
         default: test
@@ -88,7 +93,50 @@ concurrency:
   group: clip-engine-run
   cancel-in-progress: false
 jobs:
+  scan:
+    if: ${{ inputs.scan_urls != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache static ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: ~/ffmpeg-bin
+          key: ffmpeg-btbn-linux64-gpl-v1
+      - name: Install tools (static ffmpeg, yt-dlp, opencv 4.x)
+        timeout-minutes: 8
+        run: |
+          if [ ! -x "$HOME/ffmpeg-bin/ffmpeg" ] || [ ! -x "$HOME/ffmpeg-bin/ffprobe" ]; then
+            mkdir -p "$HOME/ffmpeg-bin"
+            timeout 200 curl -fsSL --retry 2 --connect-timeout 15 -o /tmp/ffmpeg.tar.xz \
+              "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+            tar -xJf /tmp/ffmpeg.tar.xz -C "$HOME/ffmpeg-bin" --strip-components=2 --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'
+          fi
+          echo "$HOME/ffmpeg-bin" >> "$GITHUB_PATH"
+          timeout 250 pip install -q -U --default-timeout 30 --retries 2 "yt-dlp[default]" "opencv-contrib-python-headless>=4.9,<5"
+      - name: Scan the clips (cam find only; dry run, nothing is uploaded)
+        timeout-minutes: 20
+        env:
+          SCAN_URLS: ${{ inputs.scan_urls }}
+        run: |
+          export PATH="$HOME/ffmpeg-bin:$PATH"
+          python -m clip_engine.cli scan $SCAN_URLS --out docs | tee scan.txt
+          { echo '### Cam scan'; echo '```'; cat scan.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit the annotated frames and contact sheets
+        run: |
+          git config user.name "fboy-engine"
+          git config user.email "240231847+fboy-engine@users.noreply.github.com"
+          git add docs/scan_annotated docs/scan
+          git commit -m "Cam scan: annotated frames and contact sheets (run ${{ github.run_id }})" || { echo "nothing to commit"; exit 0; }
+          for i in 1 2 3; do git pull --rebase -q origin main && git push origin HEAD:main && break || sleep 5; done
   clip:
+    if: ${{ inputs.scan_urls == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 50
     steps:

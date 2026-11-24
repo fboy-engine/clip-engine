@@ -247,6 +247,29 @@ def cmd_grade(a):
         return 1
 
 
+def cmd_scan(a):
+    """Cam find only on whole Twitch clips: annotated frame, 3-frame contact sheet and one line per clip (no render, no cache)."""
+    import tempfile
+    from . import scan
+    results, rc = [], 0
+    for url in a.urls:
+        cid = url.rstrip("/").rsplit("/", 1)[-1]
+        try:
+            work = tempfile.mkdtemp(prefix="scan_")
+            path = download.fetch_twitch_clip(url, work)
+            info = download.probe_media(path)
+            res, ann, sheet = scan.scan_media(path, info["width"], info["height"], info["duration"], name=cid)
+            res["source"] = info
+            scan.save(res, ann, sheet, a.out, cid)
+        except Exception as e:
+            res = {"clip": cid, "ok": False, "error": f"{type(e).__name__}: {str(e)[:300]}"}
+        print(scan.line(res), flush=True)
+        results.append(res)
+    os.makedirs(os.path.join(a.out, "scan"), exist_ok=True)
+    scan.write_report(results, os.path.join(a.out, "scan", "scan.json"))
+    return rc
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="clip_engine")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -306,6 +329,10 @@ def main(argv=None):
     cb.add_argument("--candidates", default="", help="comma list: lanczos,fsrcnn,edsr,realesrgan (empty = all of cam_sr.CANDIDATES)")
     cb.add_argument("--out", default="out")
     cb.set_defaults(fn=cmd_cam_bench)
+    sc = sub.add_parser("scan")
+    sc.add_argument("urls", nargs="+")
+    sc.add_argument("--out", default="docs", help="writes <out>/scan_annotated/<id>.jpg, <out>/scan/<id>.jpg, <out>/scan/scan.json")
+    sc.set_defaults(fn=cmd_scan)
     g = sub.add_parser("grade")
     g.add_argument("--out", default="out")
     g.set_defaults(fn=cmd_grade)

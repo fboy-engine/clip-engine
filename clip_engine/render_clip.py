@@ -79,7 +79,7 @@ def tracking_masks(rect, zones, src_w, src_h):
     return m
 
 
-def tracking_report(sub, sub_plan, times, fps):
+def tracking_report(sub, sub_plan, times, fps, src_w=None, lefts=None, widths=None, bounds=None, cxs=None, margin=0.01):
     """out/tracking.json content: the gate number, where each sample's subject came from, the static detections dropped."""
     src = sub.get("source") or []
     n = len(src) or 1
@@ -89,7 +89,41 @@ def tracking_report(sub, sub_plan, times, fps):
             "static_dropped": [c for c in sub.get("static", []) if c.get("static")],
             "clusters_seen": sub.get("static", []), "cut_times": sub_plan["cut_times"],
             "per_sample": [{"t": round(float(t), 2), "source": s, "cx": round(float(c), 3)}
-                           for t, s, c in zip(times, src, sub["cx"])]}
+                           for t, s, c in zip(times, src, sub["cx"])],
+            **_crop_diag(sub, times, src_w, lefts, widths, bounds, cxs, margin)}
+
+
+def _crop_diag(sub, times, src_w, lefts, widths, bounds, cxs, margin):
+    """Diagnostics only (no gate reads this): per sample the tracked box and the crop in source px and why the box is not inside.
+    why: ok | no_subject | box_wider_than_crop | clamped_right | clamped_left | offset (crop not centred on the box: lag/smoothing)."""
+    if not src_w or lefts is None:
+        return {}
+    rows, counts = [], {}
+    for i, (t, left, cw) in enumerate(zip(times, lefts, widths)):
+        b = sub["box"][i]
+        r = {"t": round(float(t), 2), "crop_l": round(float(left)), "crop_r": round(float(left + cw)),
+             "cx_smoothed": round(float(cxs[i]), 3) if cxs is not None else None}
+        if b is None:
+            why = "no_subject"
+        else:
+            x0, x1 = b[0] * src_w, b[2] * src_w
+            m = margin * cw
+            r.update({"box_x0": round(float(x0)), "box_x1": round(float(x1)), "box_w": round(float(x1 - x0)),
+                      "label": (b[5] if len(b) > 5 else None), "off_px": round(float((x0 + x1) / 2 - (left + cw / 2)))})
+            if x0 >= left + m and x1 <= left + cw - m:
+                why = "ok"
+            elif x1 - x0 > cw - 2 * m:
+                why = "box_wider_than_crop"
+            elif x1 > left + cw - m and bounds and left >= bounds[1] - 1:
+                why = "clamped_right"
+            elif x0 < left + m and bounds and left <= bounds[0] + 1:
+                why = "clamped_left"
+            else:
+                why = "offset"
+        r["why"] = why
+        counts[why] = counts.get(why, 0) + 1
+        rows.append(r)
+    return {"crop_bounds_px": [round(float(v)) for v in bounds] if bounds else None, "cut_reasons": counts, "crop_samples": rows}
 
 
 def panel_bounds(rect, zones, src_w, pw):
@@ -645,7 +679,8 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         sub_plan = subject.inside_stats(sub["box"], smp["times"], [bxs[j][0] for j in idx],
                                         [bxs[j][2] for j in idx], src_w)
         stats["subject"] = sub_plan
-        trk = tracking_report(sub, sub_plan, smp["times"], vision.SAMPLE_FPS)
+        trk = tracking_report(sub, sub_plan, smp["times"], vision.SAMPLE_FPS, src_w=src_w, lefts=[bxs[j][0] for j in idx],
+                              widths=[bxs[j][2] for j in idx], bounds=bounds, cxs=cxs)
         sub_plan["sources_pct"] = trk["sources_pct"]
         with open(os.path.join(out_dir, "tracking.json"), "w") as f:
             json.dump(trk, f, indent=1)

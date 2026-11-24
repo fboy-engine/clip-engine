@@ -295,6 +295,10 @@ def payoff_end(words, start, lo, hi, rms=None, hop=0.05, phrase="", pad=0.35, rm
         if best is None or sc > best[0]:
             best = (sc, e, i, why)
     if best is None:
-        raise ValueError(f"no word-end cut point between {lo:.1f}s and {hi:.1f}s: skip this moment")
+        tight = [w for i, w in enumerate(words) if lo <= w["e"] + 0.0 <= hi + 0.35 and i + 1 < len(words) and nxt[i] - w["e"] < 0.2]
+        late = [w for i, w in enumerate(words) if hi < end_for(i) and lo <= w["e"] <= hi + 0.35]
+        raise ValueError(f"no word-end cut point between {lo:.1f}s and {hi:.1f}s: skip this moment "
+                         f"(words {len(words)}, last word ends {words[-1]['e']:.2f}s, "
+                         f"{len(tight)} ends in range rejected for a <0.2 s gap, {len(late)} whose end+pad passes {hi:.1f}s)")
     _, e, i, why = best
     return round(e, 3), "payoff heuristic: " + (", ".join(why) or "nearest gap") + f", after '{words[i]['w']}'", notes

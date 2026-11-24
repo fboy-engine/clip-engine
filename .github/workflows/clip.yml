@@ -90,7 +90,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: clip-engine-run
+  group: clip-engine-${{ inputs.url || inputs.scan_urls || github.run_id }}   # one run per source URL; different clips run in parallel
   cancel-in-progress: false
 jobs:
   scan:

@@ -10,6 +10,7 @@ import re
 import numpy as np
 
 TARGET_LEN = 32.0
+MIN_TAIL = 0.1             # a word-end cut keeps at least this much after the word
 START_SEARCH = 4.0       # s after the asked start to look for the first real motion
 MOTION_FLOOR = 0.0025    # mean abs frame diff (0..1) that counts as movement at 20 fps
 FROZEN = 0.0010          # below this two frames are "the same picture"
@@ -248,7 +249,10 @@ def payoff_end(words, start, lo, hi, rms=None, hop=0.05, phrase="", pad=0.35, rm
     nxt = {i: (words[i + 1]["s"] if i + 1 < len(words) else float("inf")) for i in range(len(words))}
 
     def end_for(i):
-        return min(words[i]["e"] + pad, words[i]["e"] + (nxt[i] - words[i]["e"]) * 0.8)
+        e = min(words[i]["e"] + pad, words[i]["e"] + (nxt[i] - words[i]["e"]) * 0.8)
+        if e > hi and words[i]["e"] + MIN_TAIL <= hi:      # the pad runs past the latest allowed end: cut at that end, still after the word
+            e = hi
+        return e
 
     if phrase:
         m = match_phrase(words, phrase)

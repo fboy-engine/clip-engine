@@ -243,7 +243,7 @@ def motion_box(step, play):
     return (float(x0), float(y0), float(min(x1, 1.0)), float(min(y1, 1.0)), 0.0)
 
 
-def build_tracked(dets, gray, masks, hold=4):
+def build_tracked(dets, gray, masks, hold=4, reach=None):
     """The subject per sample. Live person detections only (static ones dropped), masked zones ignored; a sample without a
     person takes the compact motion mass of the playable area when there is one. Returns build()'s dict plus
     source: per sample 'person' | 'motion' | 'none', and static: the clusters that were dropped."""
@@ -253,6 +253,16 @@ def build_tracked(dets, gray, masks, hold=4):
         return {**build(dets), "source": ["none"] * n, "static": []}
     play = playable_mask(gray.shape[1], gray.shape[2], masks)
     live, static = drop_static(dets, gray, play)
+    unframeable = [[] for _ in range(n)]
+    if reach:       # reach = (lo, hi, max_w) as fractions of the frame: a box the panel can never contain is not the subject
+        lo, hi, max_w = reach
+        kept = []
+        for i, d in enumerate(live):
+            ok = []
+            for b in d:
+                (ok if (b[2] - b[0]) <= max_w and b[0] >= lo and b[2] <= hi else unframeable[i]).append(b)
+            kept.append(ok)
+        live = kept
     steps = [step_motion(gray, i) for i in range(n)]
     mcx = []
     for st in steps:
@@ -277,7 +287,7 @@ def build_tracked(dets, gray, masks, hold=4):
         for i in range(first):
             if source[i] == "none":
                 sub["cx"][i] = sub["cx"][first]
-    sub["source"], sub["static"] = source, static
+    sub["source"], sub["static"], sub["unframeable"] = source, static, unframeable
     return sub
 
 

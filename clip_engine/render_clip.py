@@ -121,6 +121,10 @@ def _crop_diag(sub, times, src_w, lefts, widths, bounds, cxs, margin):
             else:
                 why = "offset"
         r["why"] = why
+        unf = (sub.get("unframeable") or [[]] * len(times))[i]
+        if unf:
+            r["unframeable"] = [{"x0": round(float(u[0] * src_w)), "x1": round(float(u[2] * src_w)),
+                                 "label": (u[5] if len(u) > 5 else None)} for u in unf[:3]]
         counts[why] = counts.get(why, 0) + 1
         rows.append(r)
     return {"crop_bounds_px": [round(float(v)) for v in bounds] if bounds else None, "cut_reasons": counts, "crop_samples": rows}
@@ -659,7 +663,11 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         # subject track -> smoothed crop path for the gameplay panel
         tmasks = tracking_masks(rect, zones, src_w, src_h)
         dets = [vision.detect_people(f, tmasks) for f in smp["small"]]
-        sub = subject.build_tracked(dets, vision.small_gray(smp["small"], 240, 135), tmasks)
+        # a subject must be frameable: no wider than the (punched-in) crop and inside the region the crop can reach between the overlays
+        pw_eff = pw / (1.0 + (min(config.PUNCH_TARGET, 0.05) if use_cam else config.PUNCH_TARGET))
+        m_px = 0.01 * pw_eff + (pw - pw_eff) / 2
+        reach = ((bounds[0] + m_px) / src_w, (bounds[1] + pw - m_px) / src_w, 0.98 * pw_eff / src_w)
+        sub = subject.build_tracked(dets, vision.small_gray(smp["small"], 240, 135), tmasks, reach=reach)
         cxs = smooth(sub["cx"], alpha=0.4, deadband=0.03)
         pts = [(round(tt, 3), round(max(bounds[0], min(c * src_w - pw / 2, bounds[1])), 1))
                for tt, c in zip(smp["times"], cxs)] or [(0.0, round((bounds[0] + bounds[1]) / 2, 1))]

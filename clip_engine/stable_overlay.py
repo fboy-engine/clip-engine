@@ -16,7 +16,10 @@ STEP_K = 6              # px averaged on each side of a candidate edge
 STEP_THR = 9.0          # gray levels of picture change that make an edge "hard"
 PERSIST = 0.5           # share of the sampled frames an edge must be present in at the same place
 MIN_OUTSIDE_MOTION = 2.0    # mean gray change between sampled frames outside the cam: below it the game is not changing
-OUTER_PREFERENCE = 0.8  # an outer line scoring >= 80% of the best one wins (a wall edge inside the cam must not shrink the cam)
+QUALIFY = 0.3           # a line scoring >= 30% of the best one (and persistent) qualifies; the OUTERMOST qualifying line is the border
+                        # (edges inside the cam picture - blanket, bed, shelf - persist too and must not shrink the cam)
+MIN_LINE_PERSIST = 0.6
+SNAP = 0.04             # a border within 4% of the frame edge is the frame edge (the cam runs to the edge, a thin strip is not game)
 
 
 def persistent_steps(gray_frames, k=STEP_K, thr=STEP_THR, frac=PERSIST, minlen_frac=0.08):
@@ -72,14 +75,14 @@ def _score(line, lo, hi, a, b):
 
 
 def _pick(lines, lo, hi, a, b):
-    """Best line by score; an outer line scoring >= OUTER_PREFERENCE of it wins. `lines` are ordered inner -> outer."""
+    """Outermost line among the qualifying ones (score >= QUALIFY x best, persist >= MIN_LINE_PERSIST). `lines` are ordered inner -> outer."""
     scored = [(_score(l, lo, hi, a, b), l) for l in lines]
     scored = [s for s in scored if s[0] > 0]
     if not scored:
         return None
     top = max(s[0] for s in scored)
-    ok = [l for s, l in scored if s >= OUTER_PREFERENCE * top]
-    return ok[-1]
+    ok = [l for s, l in scored if s >= QUALIFY * top and l["persist"] >= MIN_LINE_PERSIST]
+    return ok[-1] if ok else None
 
 
 def _grow(f, vl, hl, w_src, h_src):
@@ -92,12 +95,20 @@ def _grow(f, vl, hl, w_src, h_src):
                    key=lambda l: l["x"])
     L, R = _pick(left, "y0", "y1", cy - 2.5 * fw, cy + 2.5 * fw), _pick(right, "y0", "y1", cy - 2.5 * fw, cy + 2.5 * fw)
     x0, x1 = (L["x"] if L else 0.0), (R["x"] if R else float(w_src))
+    if L and x0 <= SNAP * w_src:
+        x0, L = 0.0, None
+    if R and x1 >= (1 - SNAP) * w_src:
+        x1, R = float(w_src), None
     up = sorted([l for l in hl if l["y"] < cy - 0.6 * fw and cy - l["y"] <= 0.6 * h_src and
                  min(l["x1"], x1) - max(l["x0"], x0) >= 0.45 * (x1 - x0)], key=lambda l: -l["y"])
     dn = sorted([l for l in hl if l["y"] > cy + 0.6 * fw and l["y"] - cy <= 0.6 * h_src and
                  min(l["x1"], x1) - max(l["x0"], x0) >= 0.45 * (x1 - x0)], key=lambda l: l["y"])
     T, B = _pick(up, "x0", "x1", x0, x1), _pick(dn, "x0", "x1", x0, x1)
     y0, y1 = (T["y"] if T else 0.0), (B["y"] if B else float(h_src))
+    if T and y0 <= SNAP * h_src:
+        y0, T = 0.0, None
+    if B and y1 >= (1 - SNAP) * h_src:
+        y1, B = float(h_src), None
     sides = {"left": "line" if L else "edge", "right": "line" if R else "edge",
              "top": "line" if T else "edge", "bottom": "line" if B else "edge"}
     return (x0, y0, x1, y1), sides, [l for l in (L, R, T, B) if l]

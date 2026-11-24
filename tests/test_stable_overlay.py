@@ -65,6 +65,21 @@ class StableOverlay(unittest.TestCase):
         r = so.detect(fr, face_fn=face_at(840, 100, 60))
         self.assertTrue(near(r["cam"]["rect_px"], (725, 0, 960, 227)), r["cam"]["rect_px"])
 
+    def test_inner_edges_inside_the_cam_do_not_shrink_it(self):             # blanket / bed / shelf edges persist inside the cam picture
+        fr = frames(cam=(725, 0, 960, 227), cam_level=60)
+        for g in fr:
+            g[60:200, 860:960] = 110        # a lighter inner panel with its own hard edges
+            g[150:227, 725:800] = 20
+        r = so.detect(fr, face_fn=face_at(840, 100, 60))
+        self.assertTrue(near(r["cam"]["rect_px"], (725, 0, 960, 227)), r["cam"]["rect_px"])
+
+    def test_cam_a_few_percent_from_the_frame_edge_snaps_to_it(self):
+        fr = frames(cam=(725, 0, 940, 227), cam_level=60)
+        for g in fr:
+            g[:, 940:960] = 25              # thin dark strip at the frame edge (a shelf) that is part of the stream layout
+        r = so.detect(fr, face_fn=face_at(830, 100, 60))
+        self.assertTrue(r["cam"]["rect_px"][2] == W, r["cam"]["rect_px"])
+
     def test_still_scene_is_not_an_overlay(self):                           # nothing changes outside: cannot tell overlay from scene
         with self.assertRaises(cf.CamNotConfident) as cm:
             so.detect(frames(game=False), face_fn=face_at(840, 100, 60))

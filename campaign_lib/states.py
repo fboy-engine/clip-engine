@@ -43,6 +43,7 @@ class Item:
     media_id: str = ""
     permalink: str = ""
     note: str = ""
+    run: str = ""  # id of the clip.yml run that rendered this item (artifact clip-<run>), or PENDING@<utc>
 
 
 def transition(item, new, now=None, media_id=None, permalink=None):

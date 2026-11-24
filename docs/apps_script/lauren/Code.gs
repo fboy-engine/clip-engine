@@ -23,9 +23,9 @@ var MAX_LINK_CHARS = 300;
 
 // CELL_MAP_BEGIN
 var TABS = {campaign: 'Campaign', queue: 'Queue', log: 'Log'};
-var CELLS = {name: 3, state: 4, next: 5, caption: 6, approve: 7, timer: 8, opens: 9, link: 10, submit: 11, add_link: 12, add_confirm: 13, updated: 14, unlock_utc: 16, log_rows: 17, lock_run: 18, heartbeat: 19, ig_expires: 20, handoff: 21, loop_start: 22};
+var CELLS = {name: 3, state: 4, next: 5, caption: 6, approve: 7, timer: 8, opens: 9, link: 10, submit: 11, add_link: 12, add_confirm: 13, updated: 14, unlock_utc: 16, log_rows: 17, lock_run: 18, heartbeat: 19, ig_expires: 20, handoff: 21, loop_start: 22, real_upload: 23};
 var QUEUE_LAST_ROW = 100;
-var QUEUE_COLS = ['n', 'source', 'kind', 'state', 'moment', 'hook', 'caption', 'note', 'posted_at', 'media_id', 'link', 'submit_before', 'updated'];
+var QUEUE_COLS = ['n', 'source', 'kind', 'state', 'moment', 'hook', 'caption', 'note', 'posted_at', 'media_id', 'link', 'submit_before', 'updated', 'run'];
 // CELL_MAP_END
 
 var WRITABLE = ['approve', 'add_link', 'add_confirm'];

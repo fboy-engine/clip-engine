@@ -34,5 +34,22 @@ class ReachCellTests(unittest.TestCase):
         self.assertNotIn("HYPERLINK", str(data))
 
 
+class RunColumnTests(unittest.TestCase):
+    def test_run_id_round_trips_and_old_13_column_rows_still_read(self):
+        from campaign_lib.states import Item
+        it = Item(n=3, source="https://m.twitch.tv/x/clip/Abc", run="45300515662")
+        row = sheet.item_row(it, NOW)
+        self.assertEqual(len(row), 14)
+        self.assertEqual(sheet.row_item(row).run, "45300515662")
+        self.assertEqual(sheet.row_item(row[:13]).run, "")
+
+    def test_real_upload_switch_is_a_machine_cell_and_off_by_default(self):
+        self.assertEqual(sheet.CELLS["real_upload"], 23)
+        data = sheet.init_payload(config.load(), NOW)
+        camp = data[0]["values"]
+        self.assertEqual(len(camp), 23)
+        self.assertEqual(camp[22][1], "")
+
+
 if __name__ == "__main__":
     unittest.main()

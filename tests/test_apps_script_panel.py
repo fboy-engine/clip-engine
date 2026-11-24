@@ -25,7 +25,7 @@ GS = read("Code.gs")
 HTML = read("Index.html")
 QUEUE_LABELS = {"n": "#", "source": "Source", "kind": "Kind", "state": "State", "moment": "Moment", "hook": "Hook",
                 "caption": "Caption", "note": "Note", "posted_at": "Posted at (UTC)", "media_id": "Media id",
-                "link": "Reel link", "submit_before": "Submit before", "updated": "Updated"}
+                "link": "Reel link", "submit_before": "Submit before", "updated": "Updated", "run": "Clip run"}
 
 
 def cell_map_block():

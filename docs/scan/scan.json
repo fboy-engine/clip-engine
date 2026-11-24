@@ -1,0 +1,374 @@
+[
+ {
+  "clip": "GoldenSincereHamburgerHeyGuys-Zo31y1z1tLdwRScS",
+  "ok": true,
+  "frames": 24,
+  "size": [
+   1920,
+   1080
+  ],
+  "method": "border_lines",
+  "rect_px": [
+   1304,
+   0,
+   1920,
+   424
+  ],
+  "rect_frac": [
+   0.6792,
+   0.0,
+   1.0,
+   0.3931
+  ],
+  "confidence": 0.991,
+  "face_hit_pct": 100.0,
+  "reasons": [],
+  "zones": {
+   "cam": [
+    1304,
+    0,
+    1920,
+    424
+   ],
+   "chat": [
+    1696,
+    424,
+    1920,
+    1075
+   ],
+   "side_panel": [
+    1304,
+    0,
+    1920,
+    1080
+   ]
+  },
+  "window": [
+   2.0,
+   29.0
+  ],
+  "source": {
+   "width": 1920,
+   "height": 1080,
+   "fps": 60.0,
+   "vcodec": "hevc",
+   "has_audio": true,
+   "duration": 37.67,
+   "size_mb": 6.9
+  }
+ },
+ {
+  "clip": "MuddyTardyClipzFeelsBadMan-Qb1_guoZe76pMLRY",
+  "ok": true,
+  "frames": 24,
+  "size": [
+   1920,
+   1080
+  ],
+  "method": "stable_overlay",
+  "rect_px": [
+   1304,
+   0,
+   1808,
+   472
+  ],
+  "rect_frac": [
+   0.6794,
+   0.0,
+   0.9414,
+   0.4366
+  ],
+  "confidence": 0.892,
+  "face_hit_pct": 66.7,
+  "reasons": [],
+  "zones": {
+   "cam": [
+    1304,
+    0,
+    1808,
+    472
+   ]
+  },
+  "window": [
+   2.0,
+   29.0
+  ],
+  "source": {
+   "width": 1920,
+   "height": 1080,
+   "fps": 60.0,
+   "vcodec": "hevc",
+   "has_audio": true,
+   "duration": 60.01,
+   "size_mb": 37.3
+  }
+ },
+ {
+  "clip": "SlickPatientToadDoritosChip-LV7_h3WaUULTckLh",
+  "ok": false,
+  "frames": 24,
+  "size": [
+   1920,
+   1080
+  ],
+  "error": "no confident cam: best candidate [0, 0, 1920, 1080] (no straight border found around the face (a face alone is not a cam); 4 of 4 sides have no border and no frame edge to stop at; rectangle covers 100.0% of the frame (a cam is 1.2-42%)): pass cam_rect | stable-overlay fallback: no confident cam: best candidate [1703, 0, 1882, 365] (face is 73% of the rectangle width; rectangle aspect 0.49 is not a cam shape): pass cam_rect",
+  "method": "stable_overlay",
+  "rect_px": [
+   1703,
+   0,
+   1882,
+   365
+  ],
+  "rect_frac": [
+   0.887,
+   0.0,
+   0.9799,
+   0.338
+  ],
+  "confidence": 0.59,
+  "face_hit_pct": 95.8,
+  "reasons": [
+   "face is 73% of the rectangle width",
+   "rectangle aspect 0.49 is not a cam shape"
+  ],
+  "window": [
+   2.0,
+   29.0
+  ],
+  "source": {
+   "width": 1920,
+   "height": 1080,
+   "fps": 60.0,
+   "vcodec": "hevc",
+   "has_audio": true,
+   "duration": 35.01,
+   "size_mb": 14.3
+  }
+ },
+ {
+  "clip": "PeacefulBraveBubbleteaOhMyDog-smiMxfhYlj3rkpNB",
+  "ok": true,
+  "frames": 24,
+  "size": [
+   1920,
+   1080
+  ],
+  "method": "stable_overlay",
+  "rect_px": [
+   1680,
+   112,
+   1920,
+   256
+  ],
+  "rect_frac": [
+   0.8747,
+   0.1037,
+   1.0,
+   0.237
+  ],
+  "confidence": 0.867,
+  "face_hit_pct": 75.0,
+  "reasons": [],
+  "zones": {
+   "cam": [
+    1680,
+    112,
+    1920,
+    256
+   ]
+  },
+  "window": [
+   2.0,
+   29.0
+  ],
+  "source": {
+   "width": 1920,
+   "height": 1080,
+   "fps": 60.0,
+   "vcodec": "hevc",
+   "has_audio": true,
+   "duration": 55.64,
+   "size_mb": 10.4
+  }
+ },
+ {
+  "clip": "CogentHeadstrongSashimiPanicVis-U3eSLSv9jOYbOnIs",
+  "ok": true,
+  "frames": 24,
+  "size": [
+   1920,
+   1080
+  ],
+  "method": "stable_overlay",
+  "rect_px": [
+   1553,
+   0,
+   1882,
+   454
+  ],
+  "rect_frac": [
+   0.8089,
+   0.0,
+   0.9799,
+   0.4208
+  ],
+  "confidence": 0.933,
+  "face_hit_pct": 83.3,
+  "reasons": [],
+  "zones": {
+   "cam": [
+    1553,
+    0,
+    1882,
+    454
+   ]
+  },
+  "window": [
+   2.0,
+   29.0
+  ],
+  "source": {
+   "width": 1920,
+   "height": 1080,
+   "fps": 60.0,
+   "vcodec": "hevc",
+   "has_audio": true,
+   "duration": 30.0,
+   "size_mb": 6.5
+  }
+ },
+ {
+  "clip": "AttractiveTriumphantSmoothieTebowing-cXFFO-s8cKYJpIWg",
+  "ok": true,
+  "frames": 24,
+  "size": [
+   1920,
+   1080
+  ],
+  "method": "stable_overlay",
+  "rect_px": [
+   1456,
+   0,
+   1881,
+   411
+  ],
+  "rect_frac": [
+   0.7581,
+   0.0,
+   0.9797,
+   0.3806
+  ],
+  "confidence": 0.949,
+  "face_hit_pct": 83.3,
+  "reasons": [],
+  "zones": {
+   "cam": [
+    1456,
+    0,
+    1881,
+    411
+   ]
+  },
+  "window": [
+   2.0,
+   29.0
+  ],
+  "source": {
+   "width": 1920,
+   "height": 1080,
+   "fps": 60.0,
+   "vcodec": "hevc",
+   "has_audio": true,
+   "duration": 60.01,
+   "size_mb": 20.7
+  }
+ },
+ {
+  "clip": "TallSarcasticDumplingsRalpherZ-yfcKexOzQP153QQ6",
+  "ok": false,
+  "frames": 24,
+  "size": [
+   1920,
+   1080
+  ],
+  "error": "no confident cam: best candidate [0, 0, 1920, 1080] (no straight border found around the face (a face alone is not a cam); 4 of 4 sides have no border and no frame edge to stop at; rectangle covers 100.0% of the frame (a cam is 1.2-42%)): pass cam_rect | stable-overlay fallback: no confident cam: best candidate [1684, 0, 1854, 456] (face is 74% of the rectangle width; rectangle aspect 0.37 is not a cam shape): pass cam_rect",
+  "method": "stable_overlay",
+  "rect_px": [
+   1684,
+   0,
+   1854,
+   456
+  ],
+  "rect_frac": [
+   0.8771,
+   0.0,
+   0.9656,
+   0.4218
+  ],
+  "confidence": 0.59,
+  "face_hit_pct": 95.8,
+  "reasons": [
+   "face is 74% of the rectangle width",
+   "rectangle aspect 0.37 is not a cam shape"
+  ],
+  "window": [
+   2.0,
+   19.97
+  ],
+  "source": {
+   "width": 1920,
+   "height": 1080,
+   "fps": 60.0,
+   "vcodec": "hevc",
+   "has_audio": true,
+   "duration": 19.97,
+   "size_mb": 4.9
+  }
+ },
+ {
+  "clip": "OptimisticFantasticVanillaRickroll-h3S4-Q874oTvgVNG",
+  "ok": true,
+  "frames": 24,
+  "size": [
+   1920,
+   1080
+  ],
+  "method": "stable_overlay",
+  "rect_px": [
+   1456,
+   0,
+   1881,
+   454
+  ],
+  "rect_frac": [
+   0.7581,
+   0.0,
+   0.9797,
+   0.4204
+  ],
+  "confidence": 0.953,
+  "face_hit_pct": 100.0,
+  "reasons": [],
+  "zones": {
+   "cam": [
+    1456,
+    0,
+    1881,
+    454
+   ]
+  },
+  "window": [
+   2.0,
+   29.0
+  ],
+  "source": {
+   "width": 1920,
+   "height": 1080,
+   "fps": 60.0,
+   "vcodec": "hevc",
+   "has_audio": true,
+   "duration": 45.01,
+   "size_mb": 25.3
+  }
+ }
+]

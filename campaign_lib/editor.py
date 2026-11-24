@@ -174,6 +174,8 @@ class Editor:
             if created and (now - created).total_seconds() > MAX_WAIT_S:
                 self._skip(it, "render run did not finish in %d h" % (MAX_WAIT_S // 3600), log)
             return
+        if it.kind == "vod" and self.vod is not None and self.vod.is_find(it):
+            return self.vod.after_find(it, run, now, log)  # a find run has no clip: vod.py picks the moment and renders
         zf = self.gh.artifact_zip(it.run, "clip-")
         grade = _read(zf, "grade.json") if zf else None
         render = _read(zf, "render.json") if zf else None

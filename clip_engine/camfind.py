@@ -339,6 +339,13 @@ def detect(gray_frames, face_fn=None, min_conf=MIN_CONFIDENCE):
     if len(cands) > 1 and cands[1]["confidence"] >= min_conf and cands[1]["confidence"] >= best["confidence"] - 0.1:
         raise CamNotConfident("two different cam rectangles are equally plausible "
                               f"({[round(v) for v in best['rect']]} and {[round(v) for v in cands[1]['rect']]}): pass cam_rect", info)
+    return finish(gray_frames, faces, best, vl, hl)
+
+
+def finish(gray_frames, faces, best, vl, hl):
+    """Chat/zones/result dict around the chosen cam candidate `best` (shared by detect() and stable_overlay.detect())."""
+    n = len(gray_frames)
+    h_src, w_src = gray_frames[0].shape
     rect = best["rect"]
     inside = [f for f in faces if rect[0] <= f["cx"] <= rect[2] and rect[1] <= f["cy"] <= rect[3]]
     chat = find_chat(gray_frames, rect, w_src, h_src)
@@ -400,7 +407,15 @@ def detect_media(media, start, dur, w_src, h_src, n=N_SAMPLES, face_fn=None, deb
     """Sample `n` frames of the window and run detect(). With `debug_jpg` the annotated middle frame is written."""
     times = sample_times(start, dur, n)
     gray = grab(media, times, w_src, h_src)
-    res = detect(gray, face_fn=face_fn)
+    try:
+        res = detect(gray, face_fn=face_fn)
+        res["method"] = "border_lines"
+    except CamNotConfident as e1:           # no drawn border: fall back to the stable-overlay rule (same frames)
+        from . import stable_overlay
+        try:
+            res = stable_overlay.detect(gray, face_fn=face_fn)
+        except CamNotConfident as e2:
+            raise CamNotConfident(f"{e1} | stable-overlay fallback: {e2}", {**e1.info, "stable_overlay": e2.info}) from e2
     if debug_jpg:
         col = grab(media, [times[len(times) // 2]], w_src, h_src, color=True)
         draw_debug(col[0] if col else np.dstack([gray[len(gray) // 2]] * 3), res, debug_jpg)

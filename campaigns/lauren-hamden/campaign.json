@@ -11,6 +11,7 @@
     "banned_hashtags": ["#fyp", "#foryou", "#foryoupage", "#viral", "#follow", "#like4like", "#f4f", "#followforfollow", "#trending", "#explore"]
   },
   "clip": {"min_s": 25, "max_s": 45},
+  "render": {"start_s": 2, "max_span_s": 27},
   "timings": {"approve_gap_min": 150, "submit_window_min": 30},
   "display_tz": "Asia/Karachi",
   "sheet": {"title": "Clip Engine - Lauren Hamden GTA6", "id": "1VYtK6mm40NXyB6ixLRoMtsc5yDxFXX9u_FUCcLGLvh8"},
@@ -30,7 +31,7 @@
     {"n": 5, "kind": "clip", "url": "https://m.twitch.tv/laurenhamdenn/clip/PeacefulBraveBubbleteaOhMyDog-smiMxfhYlj3rkpNB"},
     {"n": 6, "kind": "clip", "url": "https://m.twitch.tv/laurenhamdenn/clip/CogentHeadstrongSashimiPanicVis-U3eSLSv9jOYbOnIs"},
     {"n": 7, "kind": "clip", "url": "https://m.twitch.tv/laurenhamdenn/clip/AttractiveTriumphantSmoothieTebowing-cXFFO-s8cKYJpIWg"},
-    {"n": 8, "kind": "clip", "url": "https://m.twitch.tv/laurenhamdenn/clip/TallSarcasticDumplingsRalpherZ-yfcKexOzQP153QQ6"},
+    {"n": 8, "kind": "clip", "url": "https://m.twitch.tv/laurenhamdenn/clip/TallSarcasticDumplingsRalpherZ-yfcKexOzQP153QQ6", "cam_rect": "0.679,0,1,0.393"},
     {"n": 9, "kind": "clip", "url": "https://m.twitch.tv/laurenhamdenn/clip/OptimisticFantasticVanillaRickroll-h3S4-Q874oTvgVNG"},
     {"n": 10, "kind": "vod", "url": "https://m.twitch.tv/videos/2934045907"}
   ]

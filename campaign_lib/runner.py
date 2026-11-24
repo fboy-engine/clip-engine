@@ -95,7 +95,7 @@ class Router:
 
 
 def tick(io, cfg, now, fake=False, timings=None, guard=None, extra_values=None, extra_log=None,
-         uploader=None, fake_uploader=None, run_id=""):
+         uploader=None, fake_uploader=None, run_id="", editor=None):
     """One pass. Returns a dict summary. `timings` overrides approve_gap_min / submit_window_min (tests only).
 
     guard(cells, now): called on every fresh read (and again before an upload); it raises to stop the pass
@@ -149,6 +149,10 @@ def tick(io, cfg, now, fake=False, timings=None, guard=None, extra_values=None, 
             it.caption = capmod.build_caption(cfg, "Fake test clip number %d, nothing is posted" % it.n)
             states.transition(it, "READY")
             log.append(("FAKE_EDIT", "clip #%d READY" % it.n))
+
+    # 2b) real clips: dispatch / poll the render workflow (the loop itself never renders)
+    if editor is not None and not fake:
+        editor.advance(items, now, log)
 
     # 3) decide
     acts = states.plan(items, now, tim, approve)

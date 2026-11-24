@@ -296,6 +296,29 @@ class RealItemsNeedTheSwitch(unittest.TestCase):
         self.assertEqual(state_of(io).state, "POSTED")
 
 
+class EditorHook(unittest.TestCase):
+    def test_editor_runs_each_tick_and_its_results_reach_the_sheet(self):
+        class Ed:
+            def advance(self, items, now, log):
+                items[0].state = "SKIPPED"
+                items[0].note = "skipped: test"
+                log.append(("SKIPPED", "clip #1: test"))
+
+        a, b = Item(n=1, source="a"), Item(n=2, source="b")
+        io = MemIO([a, b])
+        runner.tick(io, CFG, NOW, editor=Ed())
+        self.assertEqual(state_of(io, 1).state, "SKIPPED")
+        self.assertIn(("SKIPPED", "clip #1: test"), io.log)
+        self.assertIn("#2", io.cells["next"])  # the panel head moved on to clip 2
+
+    def test_editor_is_not_called_for_fake_runs(self):
+        class Ed:
+            def advance(self, *a):
+                raise AssertionError("editor called")
+
+        runner.tick(MemIO([fake_item(state="QUEUED")]), CFG, NOW, fake=True, editor=Ed())
+
+
 class Helpers(unittest.TestCase):
     def test_intent_roundtrip(self):
         n = poster.intent_note("p3-abc", "9-1", NOW)

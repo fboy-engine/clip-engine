@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 from datetime import datetime, timezone
 
-from . import composio, editor, engine, instagram, loop, runner, safelog, sheet
+from . import composio, editor, engine, instagram, loop, runner, safelog, sheet, vod
 from .ghclient import GitHub
 
 
@@ -27,6 +27,23 @@ def probe_source(url):
     if not dur:
         raise ValueError("source has no duration")
     return {"duration": float(dur)}
+
+
+def chapters_source(url):
+    """vod.Vod chapters: [{"title", "start_time", "end_time"}] of a stream (metadata only, nothing is downloaded).
+    ValueError = the stream can never work (live, unreadable JSON); other errors = try again later."""
+    p = subprocess.run(["yt-dlp", "--no-colors", "--no-playlist", "--skip-download", "-J", url],
+                       capture_output=True, text=True, timeout=180)
+    if p.returncode != 0:
+        raise RuntimeError("probe failed")
+    try:
+        j = json.loads(p.stdout)
+    except ValueError:
+        raise ValueError("unreadable stream info")
+    if j.get("is_live"):
+        raise ValueError("stream is live")
+    return [{"title": c.get("title"), "start_time": c.get("start_time"), "end_time": c.get("end_time")}
+            for c in (j.get("chapters") or []) if c.get("start_time") is not None and c.get("end_time") is not None]
 
 
 def run_id_from_env(environ=None):
@@ -56,7 +73,7 @@ def run_loop(cfg, io, gh, slot, token, fake=False, timings=None, now_fn=None, sl
     sleep_fn = sleep_fn or time.sleep
     log = log or make_logger(cfg, environ)
     my_id = run_id_from_env(environ)
-    ed = None if fake else editor.Editor(gh, cfg, probe_source)
+    ed = None if fake else editor.Editor(gh, cfg, probe_source, vod=vod.Vod(gh, cfg, chapters_source))
     up = build_uploader(cfg, gh, environ)
     seen = {"states": None}
 

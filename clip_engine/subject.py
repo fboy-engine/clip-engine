@@ -51,6 +51,118 @@ def build(dets, motion_cx=None, hold=4):
     return {"cx": cx, "tracked": tracked, "box": boxes}
 
 
+LINK_DIST = 0.18            # max centre jump (fraction of the frame, per sample) for a detection to continue a track
+LINK_GAP = 3                # a track survives this many samples without a detection before it is closed
+WINDOW = 2                  # persistence/centrality are scored over +-WINDOW samples
+SWITCH_RATIO = 1.3          # a challenger track must beat the current subject by this factor to take over
+HOLD_SAMPLES = 2            # a briefly lost subject keeps its last box this many samples (still counted, it is a real detection)
+VEHICLE = ("car", "truck", "motorcycle", "bicycle")
+
+
+def _centre(b):
+    return (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+
+
+def link_tracks(dets, max_dist=LINK_DIST, max_gap=LINK_GAP):
+    """Greedy nearest-centre linking of per-sample detections into tracks: [{hits: {sample: box}, last, cx, cy}]."""
+    tracks = []
+    for i, d in enumerate(dets):
+        pairs = []
+        for ti, t in enumerate(tracks):
+            gap = i - t["last"]
+            if gap > max_gap + 1:
+                continue
+            for k, b in enumerate(d):
+                cx, cy = _centre(b)
+                dist = float(np.hypot(cx - t["cx"], cy - t["cy"]))
+                if dist <= max_dist * gap:
+                    pairs.append((dist, ti, k))
+        used_t, used_k = set(), set()
+        for dist, ti, k in sorted(pairs):
+            if ti in used_t or k in used_k:
+                continue
+            used_t.add(ti)
+            used_k.add(k)
+            t = tracks[ti]
+            t["hits"][i] = d[k]
+            t["last"] = i
+            t["cx"], t["cy"] = _centre(d[k])
+        for k, b in enumerate(d):
+            if k not in used_k:
+                cx, cy = _centre(b)
+                tracks.append({"hits": {i: b}, "last": i, "cx": cx, "cy": cy})
+    return tracks
+
+
+def track_score(t, i, window=WINDOW):
+    """Persistence, centrality and size of a track around sample i (motion is handled by dropping static detections)."""
+    idx = [j for j in t["hits"] if abs(j - i) <= window]
+    if not idx:
+        return 0.0
+    persist = len(idx) / (2 * window + 1)
+    cen = float(np.mean([1.0 - min(1.0, abs(_centre(t["hits"][j])[0] - 0.5) * 2) for j in idx]))
+    size = float(np.mean([min(1.0, (t["hits"][j][2] - t["hits"][j][0]) * (t["hits"][j][3] - t["hits"][j][1]) / 0.04) for j in idx]))
+    conf = float(np.mean([t["hits"][j][4] for j in idx]))
+    return 0.45 * persist + 0.25 * cen + 0.15 * size + 0.15 * conf
+
+
+def _is_vehicle(b):
+    return len(b) > 5 and b[5] in VEHICLE
+
+
+def track_subject(dets, hold=HOLD_SAMPLES, window=WINDOW, ratio=SWITCH_RATIO):
+    """Subject per sample from live (non-static) detections: the most persistent, central track over a short window,
+    sticky (a challenger needs `ratio` x the score), the last box held for `hold` samples when the subject is briefly lost.
+    A car scene: when most of the window's score mass is vehicles the subject is the best vehicle.
+    Returns build()'s dict plus held: [bool], track: [id | None], label: [str | None]."""
+    n = len(dets)
+    tracks = link_tracks(dets)
+    cx, tracked, boxes, held, tid, label = [], [], [], [], [], []
+    cur, last_box, last_i = None, None, None
+    for i in range(n):
+        cand = [(track_score(t, i, window), ti) for ti, t in enumerate(tracks) if i in t["hits"]]
+        if cand and any(_is_vehicle(tracks[ti]["hits"][i]) for _, ti in cand):
+            # vehicle scene: drive scenes follow the vehicle, people inside or beside it are not the subject
+            veh = [(sc, ti) for sc, ti in cand if _is_vehicle(tracks[ti]["hits"][i])]
+            ppl = [(sc, ti) for sc, ti in cand if not _is_vehicle(tracks[ti]["hits"][i])]
+            if veh and (not ppl or max(veh)[0] >= 0.8 * max(ppl)[0]):
+                cand = veh
+        best = max(cand) if cand else None
+        if cur is not None and any(ti == cur for _, ti in cand):
+            cs = track_score(tracks[cur], i, window)
+            if best is None or best[0] < ratio * cs:
+                best = (cs, cur)
+        if best is not None:
+            cur = best[1]
+            b = tracks[cur]["hits"][i]
+            last_box, last_i = b, i
+            cx.append(_centre(b)[0])
+            tracked.append(True)
+            boxes.append(b)
+            held.append(False)
+            tid.append(cur)
+            label.append(b[5] if len(b) > 5 else None)
+        elif last_box is not None and i - last_i <= hold:
+            cx.append(_centre(last_box)[0])
+            tracked.append(True)
+            boxes.append(last_box)
+            held.append(True)
+            tid.append(cur)
+            label.append(last_box[5] if len(last_box) > 5 else None)
+        else:
+            cx.append(cx[-1] if cx else 0.5)
+            tracked.append(False)
+            boxes.append(None)
+            held.append(False)
+            tid.append(None)
+            label.append(None)
+    first = next((i for i, t in enumerate(tracked) if t), None)
+    if first:
+        for i in range(first):
+            cx[i] = cx[first]
+    return {"cx": cx, "tracked": tracked, "box": boxes, "held": held, "track": tid, "label": label}
+
+
 STATIC_ABS = 1.5            # mean gray step (0..255) under a box below which nothing moves there
 STATIC_REL = 0.5            # ... or below this share of the motion of the playable area
 STATIC_MIN_HITS = 5         # a cluster needs this many detections before it can be called static
@@ -147,11 +259,11 @@ def build_tracked(dets, gray, masks, hold=4):
         d = np.where(play, st, 0.0)
         tot = float(d.sum())
         mcx.append(0.5 if tot <= 1e-3 * d.size else float((d.sum(axis=0) * (np.arange(d.shape[1]) + 0.5)).sum() / tot / d.shape[1]))
-    sub = build(live, mcx, hold)
+    sub = track_subject(live, hold=min(hold, HOLD_SAMPLES))
     source = []
     for i in range(n):
         if sub["tracked"][i]:
-            source.append("person")
+            source.append("vehicle" if sub["label"][i] in VEHICLE else "person")
             continue
         mb = motion_box(steps[i], play)
         if mb is None:

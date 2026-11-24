@@ -85,7 +85,7 @@ def tracking_report(sub, sub_plan, times, fps):
     n = len(src) or 1
     return {"gate_pct": TRACK_GATE_PCT, "in_panel_pct": sub_plan["in_panel_pct"], "tracked_pct": sub_plan["tracked_pct"],
             "inside_pct_of_tracked": sub_plan["inside_pct"], "samples": sub_plan["samples"], "sample_fps": fps,
-            "sources_pct": {k: round(100.0 * src.count(k) / n, 1) for k in ("person", "motion", "none")},
+            "sources_pct": {k: round(100.0 * src.count(k) / n, 1) for k in ("person", "vehicle", "motion", "none")},
             "static_dropped": [c for c in sub.get("static", []) if c.get("static")],
             "clusters_seen": sub.get("static", []), "cut_times": sub_plan["cut_times"],
             "per_sample": [{"t": round(float(t), 2), "source": s, "cx": round(float(c), 3)}

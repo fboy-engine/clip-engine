@@ -324,6 +324,16 @@ jobs:
           timeout 90 sudo apt-get update -qq || true
           timeout 180 sudo apt-get install -y -qq --no-install-recommends tesseract-ocr tesseract-ocr-eng || echo "tesseract install failed: OCR will be reported as unavailable"
           command -v tesseract && tesseract --version 2>&1 | head -n1 || true
+      - name: Cache the YOLOX-s object detector (pinned URL and SHA-256 in clip_engine/detector.py)
+        if: ${{ inputs.render }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/clip-engine/det
+          key: yolox-s-c5c2d13e
+      - name: Fetch and verify the YOLOX-s model (refused on a hash mismatch)
+        if: ${{ inputs.render }}
+        timeout-minutes: 5
+        run: python -c "from clip_engine import detector; print('yolox ok', detector.ensure_model())"
       - name: Cache super-resolution models (SHA-256 pinned in code)
         if: ${{ inputs.render || inputs.cam_bench }}
         uses: actions/cache@v4

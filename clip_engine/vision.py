@@ -272,26 +272,19 @@ def mask_list(mask):
     return [tuple(mask)] if isinstance(mask[0], (int, float, np.integer, np.floating)) else [tuple(m) for m in mask]
 
 
-def detect_people(img, mask=None, min_score=0.4):
-    """HOG people detector on a small BGR frame. mask = (x0, y0, x1, y1) fractions to blank out
-    (the facecam), or a list of such rects (cam, chat, side panel). Returns normalised boxes (x0, y0, x1, y1, score)."""
-    import cv2
-    global _HOG
-    if _HOG is None:
-        _HOG = load_people_detector(cv2)
+def detect_people(img, mask=None, min_score=0.3):
+    """YOLOX-s (onnxruntime) on a small BGR frame: person, car, truck, motorcycle, bicycle. mask = (x0, y0, x1, y1)
+    fractions to blank out (the facecam), or a list of such rects (cam, chat, side panel). Returns normalised boxes
+    (x0, y0, x1, y1, score, label)."""
+    from . import detector
     h, w = img.shape[:2]
     im = img
     masks = mask_list(mask)
     if masks:
         im = img.copy()
         for m in masks:
-            im[int(m[1] * h):int(np.ceil(m[3] * h)), int(m[0] * w):int(np.ceil(m[2] * w))] = 127
-    rects, weights = _HOG.detectMultiScale(im, winStride=(8, 8), padding=(8, 8), scale=1.05)
-    out = []
-    for (x, y, bw, bh), s in zip(rects, np.ravel(weights)):
-        if s >= min_score:
-            out.append((x / w, y / h, (x + bw) / w, (y + bh) / h, float(s)))
-    return out
+            im[int(m[1] * h):int(np.ceil(m[3] * h)), int(m[0] * w):int(np.ceil(m[2] * w))] = 114
+    return [b for b in detector.detect(im, conf=min(min_score, detector.CONF)) if b[4] >= min_score]
 
 
 def small_gray(frames, w=64, h=36):

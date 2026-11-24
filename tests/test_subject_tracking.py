@@ -114,3 +114,45 @@ class Masks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TrackSubject(unittest.TestCase):
+    def box(self, cx, cy=0.5, w=0.1, h=0.3, s=0.8, label="person"):
+        return (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2, s, label)
+
+    def test_central_persistent_track_beats_a_brief_edge_one(self):
+        dets = [[self.box(0.5 + 0.01 * i)] + ([self.box(0.95)] if i in (3, 4) else []) for i in range(10)]
+        sub = subject.track_subject(dets)
+        self.assertTrue(all(sub["tracked"]))
+        self.assertTrue(all(0.45 < c < 0.65 for c in sub["cx"]))
+
+    def test_sticky_no_flip_on_a_slightly_better_challenger(self):
+        dets = [[self.box(0.45, s=0.6), self.box(0.62, s=0.62)] for _ in range(10)]
+        sub = subject.track_subject(dets)
+        self.assertEqual(len(set(sub["track"])), 1)
+
+    def test_brief_loss_is_held_then_given_up(self):
+        dets = [[self.box(0.5)] for _ in range(4)] + [[] for _ in range(6)]
+        sub = subject.track_subject(dets, hold=2)
+        self.assertEqual(sub["tracked"], [True] * 6 + [False] * 4)
+        self.assertEqual(sub["held"][4:6], [True, True])
+        self.assertTrue(all(b is None for b in sub["box"][6:]))
+
+    def test_loss_before_any_detection_is_not_tracked(self):
+        sub = subject.track_subject([[], [], [self.box(0.5)]])
+        self.assertEqual(sub["tracked"], [False, False, True])
+
+    def test_car_scene_follows_the_car(self):
+        dets = [[self.box(0.5, w=0.25, h=0.2, s=0.7, label="car"), self.box(0.3, s=0.9)] for _ in range(8)]
+        sub = subject.track_subject(dets)
+        self.assertEqual(set(sub["label"]), {"car"})
+
+    def test_a_lost_track_comes_back_as_the_same_track(self):
+        dets = [[self.box(0.5)], [self.box(0.52)], [], [self.box(0.55)], [self.box(0.56)]]
+        sub = subject.track_subject(dets)
+        self.assertEqual(len(set(sub["track"])), 1)
+
+    def test_no_detection_never_becomes_a_centre_guess(self):
+        sub = subject.track_subject([[] for _ in range(5)])
+        self.assertFalse(any(sub["tracked"]))
+        self.assertTrue(all(b is None for b in sub["box"]))

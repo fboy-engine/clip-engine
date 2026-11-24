@@ -11,6 +11,7 @@ One mixed audio channel cannot say WHO is speaking, so the hint never names a sp
 """
 import json
 import os
+import time
 import wave
 
 import numpy as np
@@ -173,76 +174,123 @@ def load_model(name, cache_dir, compute_type):
     return WhisperModel(path, device="cpu", compute_type=compute_type, cpu_threads=os.cpu_count() or 2)
 
 
-# variant name -> (compute type, context seconds around the stretch; None = the whole clip window in one pass)
-VARIANTS = {"int8_ctx0.35": ("int8", 0.35), "int8_ctx1.5": ("int8", 1.5), "int8_window": ("int8", None),
+# variant name -> (compute type, context seconds around the stretch; None = the whole clip window in one pass).
+# Order matters: the cheap int8 passes run first, float32 only when time is left.
+VARIANTS = {"int8_window": ("int8", None), "int8_ctx1.5": ("int8", 1.5), "int8_ctx0.35": ("int8", 0.35),
             "float32_ctx1.5": ("float32", 1.5)}
+BUDGET_S = 300.0              # the whole evidence pass; the render step has a 35 min cap and must still finish
+FLOAT32_MIN_LEFT_S = 150.0    # a float32 large-v3 only starts when this much of the budget is left
+FLOAT32_STRETCHES = 5
 
 
 def diagnose(pcm, spans, words, gate, ocr_lines, out_dir, model_name="large-v3", cache_dir=None, log=print,
-             loader=load_model, variants=None, sr=SR):
-    """-> report dict (also written to out_dir/captions_gaps.json; listening wavs in out_dir/gaps/).
-    words = every caption word the gate counted (rescue and inserted words included); spans = raw VAD spans."""
+             loader=load_model, variants=None, sr=SR, budget_s=BUDGET_S, clock=time.monotonic):
+    """-> report dict (also written to out_dir/captions_gaps.json after every stage; listening wavs in out_dir/gaps/).
+    words = every caption word the gate counted (rescue and inserted words included); spans = raw VAD spans.
+    The audio measurements are written first; each Whisper variant is added as it finishes; a variant that does not
+    fit the time budget is listed in 'skipped_for_time', never silently dropped."""
+    t0 = clock()
+
+    def left():
+        return budget_s - (clock() - t0)
     dur = len(pcm) / sr
     words = sorted((dict(w) for w in words), key=lambda w: w["s"])
     st = cs.uncovered(words, spans, cv.PAD, MIN_LEN, JOIN)
     spans_eff, excluded, sinfo = ss.refine(pcm, spans, words)
     order = sorted(range(len(st)), key=lambda i: -(st[i][1] - st[i][0]))[:MAX_STRETCHES]
     names = variants or VARIANTS
-    heard_by = {k: {} for k in names}          # variant -> stretch index -> words
-    window_words = {}
-    for ctype in sorted({v[0] for v in names.values()}):
-        used = {k: v for k, v in names.items() if v[0] == ctype}
-        try:
-            model = loader(model_name, cache_dir, ctype)
-        except Exception as e:                  # a variant that cannot load is reported, not fatal
-            for k in used:
-                heard_by[k] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
-            continue
-        for k, (_, ctx) in used.items():
-            try:
-                if ctx is None:
-                    window_words[k] = heard(model, pcm, 0.0, dur, 0.0)
-                    for i in order:
-                        heard_by[k][i] = inside_words(window_words[k], *st[i])
-                else:
-                    for i in order:
-                        a, b = st[i]
-                        heard_by[k][i] = inside_words(heard(model, pcm, a, b, ctx), a, b)
-            except Exception as e:
-                heard_by[k] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
-        del model
+    heard_by = {k: {} for k in names}
+    window_words, errors, skipped, ran = {}, {}, [], set()
     os.makedirs(os.path.join(out_dir, "gaps"), exist_ok=True)
-    rows = []
+    base_rows = []
     for i, (a, b) in enumerate(st):
         n = i + 1
         x0, x1 = max(0.0, a - KEEP_CTX), min(dur, b + KEEP_CTX)
-        rec = {"n": n, "start": round(a, 2), "end": round(b, 2), "sec": round(b - a, 2),
-               "excluded_sec": round(sum(_overlap(a, b, e["start"], e["end"]) for e in excluded), 2),
-               "wav": f"gaps/{n:02d}_{a:.2f}-{b:.2f}.wav (audio {x0:.2f}-{x1:.2f} s)",
-               "caption_words_near": words_near(words, a, b, 0.6),
-               "subtitle_lines_on_screen": [l["text"] for l in (ocr_lines or []) if _overlap(a, b, l["s"], l["e"]) > 0]}
-        write_wav(os.path.join(out_dir, "gaps", f"{n:02d}_{a:.2f}-{b:.2f}.wav"), pcm[int(x0 * sr):int(x1 * sr)], sr)
-        rec["features"] = features(pcm[int(a * sr):int(b * sr)], sr)
-        if i in order:
-            rec["heard"] = {k: (v[i] if isinstance(v, dict) and i in v else v) for k, v in heard_by.items()}
-            allh = [w for k, v in heard_by.items() if isinstance(v, dict) for w in v.get(i, [])]
-            rec["hint"], rec["hint_why"] = hint(rec["features"], allh, rec["sec"] - rec["excluded_sec"])
-        else:
-            rec["hint"], rec["hint_why"] = "not measured (outside the 12 longest stretches)", []
-        rows.append(rec)
-    proj = {}
-    for k in names:
-        hw = window_words.get(k)
-        if hw is None:
-            hw = [w for i in order for w in (heard_by[k].get(i, []) if isinstance(heard_by[k], dict) else [])]
-        proj[k] = projected(words, spans_eff, hw, st)
-    rep = {"clip_sec": round(dur, 2), "vad_speech_sec": sinfo["vad_speech_sec"], "counted_speech_sec": sinfo["counted_speech_sec"],
-           "gate": gate, "stretch_count": len(st), "stretch_sec": round(sum(b - a for a, b in st), 2),
-           "timing_quality": timing_quality(words), "stretches": rows, "projected_coverage_if_taken": proj,
-           "note": "measurement only: nothing here is applied. One mixed channel cannot say who speaks; listen to the wavs."}
-    with open(os.path.join(out_dir, "captions_gaps.json"), "w") as f:
-        json.dump(rep, f, indent=1)
-    log(f"caption gaps: {len(st)} stretch(es), {rep['stretch_sec']} s; wrote captions_gaps.json")
+        fn = f"{n:02d}_{a:.2f}-{b:.2f}.wav"
+        write_wav(os.path.join(out_dir, "gaps", fn), pcm[int(x0 * sr):int(x1 * sr)], sr)
+        base_rows.append({"n": n, "start": round(a, 2), "end": round(b, 2), "sec": round(b - a, 2),
+                          "excluded_sec": round(sum(_overlap(a, b, e["start"], e["end"]) for e in excluded), 2),
+                          "wav": f"gaps/{fn} (audio {x0:.2f}-{x1:.2f} s)",
+                          "caption_words_near": words_near(words, a, b, 0.6),
+                          "subtitle_lines_on_screen": [l["text"] for l in (ocr_lines or [])
+                                                       if _overlap(a, b, l["s"], l["e"]) > 0],
+                          "features": features(pcm[int(a * sr):int(b * sr)], sr)})
+    tq = timing_quality(words)
+
+    def build(stage):
+        rows = []
+        for i, rec in enumerate(base_rows):
+            r = dict(rec)
+            if i in order:
+                r["heard"] = {k: heard_by[k][i] for k in names if i in heard_by[k]}
+                allh = [w for k in names for w in heard_by[k].get(i, [])]
+                r["hint"], r["hint_why"] = hint(r["features"], allh, r["sec"] - r["excluded_sec"])
+            else:
+                r["hint"], r["hint_why"] = "not measured (outside the 12 longest stretches)", []
+            rows.append(r)
+        proj = {}
+        for k in names:
+            if k not in ran:
+                continue
+            hw = window_words.get(k)
+            if hw is None:
+                hw = [w for i in order for w in heard_by[k].get(i, [])]
+            proj[k] = projected(words, spans_eff, hw, st)
+        rep = {"stage": stage, "elapsed_s": round(clock() - t0, 1), "budget_s": budget_s, "clip_sec": round(dur, 2),
+               "vad_speech_sec": sinfo["vad_speech_sec"], "counted_speech_sec": sinfo["counted_speech_sec"],
+               "gate": gate, "stretch_count": len(st), "stretch_sec": round(sum(b - a for a, b in st), 2),
+               "timing_quality": tq, "stretches": rows, "projected_coverage_if_taken": proj,
+               "variant_errors": errors, "skipped_for_time": skipped,
+               "note": "measurement only: nothing here is applied. One mixed channel cannot say who speaks; "
+                       "listen to the wavs."}
+        with open(os.path.join(out_dir, "captions_gaps.json"), "w") as f:
+            json.dump(rep, f, indent=1)
+        return rep
+
+    rep = build("audio measurements only")
+    by_type = {}
+    for k, (ct, _) in names.items():
+        by_type.setdefault(ct, []).append(k)
+    for ctype, ks in by_type.items():
+        if ctype != "int8" and left() < FLOAT32_MIN_LEFT_S:
+            skipped.append(f"{', '.join(ks)}: {left():.0f} s of the {budget_s:g} s budget left, a {ctype} model "
+                           f"needs {FLOAT32_MIN_LEFT_S:g} s")
+            continue
+        if left() <= 0:
+            skipped.append(f"{', '.join(ks)}: budget used up")
+            continue
+        try:
+            model = loader(model_name, cache_dir, ctype)
+        except Exception as e:                  # a variant that cannot load is reported, not fatal
+            for k in ks:
+                errors[k] = f"load {ctype}: {type(e).__name__}: {str(e)[:120]}"
+            continue
+        for k in ks:
+            ctx = names[k][1]
+            idx = order if ctype == "int8" else order[:FLOAT32_STRETCHES]
+            try:
+                if ctx is None:
+                    if left() <= 0:
+                        skipped.append(f"{k}: budget used up")
+                        continue
+                    window_words[k] = heard(model, pcm, 0.0, dur, 0.0)
+                    for i in idx:
+                        heard_by[k][i] = inside_words(window_words[k], *st[i])
+                else:
+                    for i in idx:
+                        if left() <= 0:
+                            skipped.append(f"{k}: stretch {i + 1} and later not run, budget used up")
+                            break
+                        a, b = st[i]
+                        heard_by[k][i] = inside_words(heard(model, pcm, a, b, ctx), a, b)
+                ran.add(k)
+            except Exception as e:
+                errors[k] = f"{type(e).__name__}: {str(e)[:120]}"
+            rep = build(f"after {k}")
+        del model
+    rep = build("complete" if not (skipped or errors) else "partial")
+    log(f"caption gaps: {len(st)} stretch(es), {rep['stretch_sec']} s, {rep['stage']}, {rep['elapsed_s']} s; "
+        "wrote captions_gaps.json")
     return rep
 
 

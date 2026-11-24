@@ -78,7 +78,7 @@ class FakeModel:
 
     def transcribe(self, audio, **kw):
         self.calls.append(kw)
-        return [FakeSeg([FakeWord(*w) for w in self.table])], None
+        return ([FakeSeg([FakeWord(*w) for w in self.table])] if self.table else []), None
 
 
 def test_heard_uses_rescue_settings_and_shifts_to_clip_clock():
@@ -110,6 +110,7 @@ def test_diagnose_end_to_end_with_fake_loader(tmp_path):
                       loader=loader, log=lambda *_: None)
     assert rep["stretch_count"] == 1 and rep["stretches"][0]["subtitle_lines_on_screen"] == ["Lose the cops"]
     assert os.path.exists(tmp_path / "captions_gaps.json") and len(os.listdir(tmp_path / "gaps")) == 1
+    assert rep["stage"] == "complete" and not rep["skipped_for_time"] and not rep["variant_errors"]
     assert set(rep["projected_coverage_if_taken"]) == set(cg.VARIANTS)
     json.dumps(rep)
 
@@ -123,4 +124,39 @@ def test_diagnose_survives_a_variant_that_cannot_load(tmp_path):
             raise MemoryError("no")
         return FakeModel([])
     rep = cg.diagnose(pcm, [(0.0, 4.0)], words, {"ok": False}, [], str(tmp_path), loader=loader, log=lambda *_: None)
-    assert "error" in rep["stretches"][0]["heard"]["float32_ctx1.5"]
+    assert "float32_ctx1.5" in rep["variant_errors"] and rep["stage"] == "partial"
+    assert "int8_window" in rep["stretches"][0]["heard"]
+
+
+def test_budget_skips_variants_but_keeps_the_audio_measurements(tmp_path):
+    pcm = np.concatenate([tone(1.0), noise(2.0, 0.02), tone(1.0)])
+    words = [{"w": "a", "s": 0.0, "e": 0.9, "p": 0.9}, {"w": "b", "s": 3.1, "e": 3.9, "p": 0.9}]
+    ticks = iter(range(0, 10000, 400))                 # every clock read is 400 s later: the 300 s budget is gone at once
+    loaded = []
+
+    def loader(name, cache, ctype):
+        loaded.append(ctype)
+        return FakeModel([])
+    rep = cg.diagnose(pcm, [(0.0, 4.0)], words, {"ok": False}, [], str(tmp_path), loader=loader, log=lambda *_: None,
+                      clock=lambda: next(ticks))
+    assert loaded == [] and rep["stage"] == "partial" and rep["skipped_for_time"]
+    saved = json.load(open(tmp_path / "captions_gaps.json"))
+    assert saved["stretches"][0]["features"]["mean_dbfs"] is not None and saved["timing_quality"]["words"] == 2
+
+
+def test_float32_only_starts_with_enough_budget_left(tmp_path):
+    pcm = np.concatenate([tone(1.0), noise(2.0, 0.02), tone(1.0)])
+    words = [{"w": "a", "s": 0.0, "e": 0.9, "p": 0.9}, {"w": "b", "s": 3.1, "e": 3.9, "p": 0.9}]
+    t = {"now": 0.0}
+    loaded = []
+
+    def clock():
+        return t["now"]
+
+    def loader(name, cache, ctype):
+        loaded.append(ctype)
+        t["now"] += 200.0                              # the int8 load eats 200 of the 300 s: 100 s left < 150 s
+        return FakeModel([])
+    rep = cg.diagnose(pcm, [(0.0, 4.0)], words, {"ok": False}, [], str(tmp_path), loader=loader, log=lambda *_: None,
+                      clock=clock)
+    assert loaded == ["int8"] and any("float32" in s for s in rep["skipped_for_time"])

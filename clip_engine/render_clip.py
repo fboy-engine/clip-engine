@@ -15,7 +15,7 @@ from fractions import Fraction
 
 import numpy as np
 
-from . import (asr_fix, balance, caption_lane, caption_sources, captions, captions_pass, cam_enhance, cam_layout, camfind, camresolve, cam_sr, config,
+from . import (asr_fix, balance, caption_gaps, caption_lane, caption_sources, captions, captions_pass, cam_enhance, cam_layout, camfind, camresolve, cam_sr, config,
                download, exclusion, hooks, layout, select_clean, srcinfo, subject, track, transcribe, trim, vision)
 from .cropplan import punch_curve, smooth
 
@@ -744,6 +744,8 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
     captions_pass.write_json(cap_check, out_dir)
     timings["captions_check_sec"] = round(time.monotonic() - t, 1)
     if not cap_check["gate"]["ok"]:
+        # evidence for the next fix (measurement only, never raises): out/captions_gaps.json + out/gaps/*.wav
+        caption_gaps.diagnose_failed(media, s_f, dur, final_u, cap_check, model, cache_dir, out_dir, log)
         raise ValueError("captions check failed (out/captions_check.json has every word): "
                          + "; ".join(cap_check["gate"]["reasons"]))
     cw = asr_fix.mask_profanity([w for w in final_u if w["s"] < dur])

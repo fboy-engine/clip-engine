@@ -403,6 +403,8 @@ jobs:
             out/cam_find.jpg
             out/cam_find.json
             out/captions_check.json
+            out/captions_gaps.json
+            out/gaps/*.wav
             out/tracking.json
             out/source_contact.jpg
             out/source_frame_*.jpg

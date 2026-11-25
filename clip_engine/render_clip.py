@@ -419,6 +419,25 @@ def render_frames(media, start, n, fps, bxs, src_w, src_h, enc_cmd, enc_log, cam
 
 # ---- words ---------------------------------------------------------------
 
+def cpu_model():
+    """CPU model string of this runner (int8 kernels can differ between runner CPUs, so a transcript is tied to it)."""
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("model name"):
+                    return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return "unknown"
+
+
+def words_fingerprint(words):
+    """Short hash of the transcript (text + times at 10 ms): two runs on the same audio must give the same one."""
+    import hashlib
+    h = hashlib.sha1("|".join(f"{w['w']}@{w['s']:.2f}-{w['e']:.2f}" for w in words).encode()).hexdigest()
+    return h[:12]
+
+
 def transcribe_words(media, start, end, model_name, cache_dir, pad=2.0, beam=5, language="en"):
     """large-v3 on the final window only (+pad for clean edges). Word times on the source-file clock."""
     from faster_whisper import WhisperModel
@@ -436,7 +455,9 @@ def transcribe_words(media, start, end, model_name, cache_dir, pad=2.0, beam=5, 
         w["e"] = round(w["e"] + a0, 3)
     meta = {"model": model_name, "beam": beam, "audio_sec": round(len(audio) / transcribe.SR, 1),
             "transcribe_sec": round(sec, 1), "n_words": len(words),
-            "language_prob": round(getattr(info, "language_probability", 0.0) or 0.0, 3)}
+            "language_prob": round(getattr(info, "language_probability", 0.0) or 0.0, 3),
+            "cpu": cpu_model(), "threads": os.cpu_count(), "compute_type": "int8", "span": [round(a0, 3), round(end + pad, 3)],
+            "words_sha": words_fingerprint(words)}
     del model
     gc.collect()
     return words, meta
@@ -611,6 +632,8 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
     if words is None:
         words, meta = transcribe_words(media, start, end, model, cache_dir)
         timings["asr_sec"] = meta["transcribe_sec"]
+        log(f"asr fingerprint: {meta['n_words']} words, sha {meta['words_sha']}, span {meta['span']}, cpu {meta['cpu']}, "
+            f"{meta['threads']} threads, {meta['compute_type']}")
     words = asr_fix.fix_words(words, GLOSSARY)
     shift, open_notes = 0.0, []
     for attempt in range(OPEN_TRIES):

@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 from datetime import datetime, timezone
 
-from . import composio, editor, engine, instagram, loop, runner, safelog, sheet, vod
+from . import composio, editor, engine, instagram, loop, quota, runner, safelog, sheet, vod
 from .ghclient import GitHub
 
 
@@ -66,12 +66,19 @@ def build_uploader(cfg, gh, environ=None):
         real=False, media=lambda item: editor.fetch_clip(gh, item, dest))
 
 
+def log_quota_waits(io, log):
+    """Print every back-off wait of a SheetIO (kind of request, which try, seconds). Counts only, nothing private."""
+    if hasattr(io, "on_wait") and io.on_wait is None:
+        io.on_wait = lambda kind, n, delay: log("QUOTA_WAIT", op=kind, attempt=n, wait_s=int(round(delay)))
+
+
 def run_loop(cfg, io, gh, slot, token, fake=False, timings=None, now_fn=None, sleep_fn=None, log=None, environ=None):
     """One loop run. Returns the process exit code."""
     import time
     now_fn = now_fn or (lambda: datetime.now(timezone.utc))
     sleep_fn = sleep_fn or time.sleep
     log = log or make_logger(cfg, environ)
+    log_quota_waits(io, log)
     my_id = run_id_from_env(environ)
     ed = None if fake else editor.Editor(gh, cfg, probe_source, vod=vod.Vod(gh, cfg, chapters_source))
     up = build_uploader(cfg, gh, environ)
@@ -91,10 +98,17 @@ def run_loop(cfg, io, gh, slot, token, fake=False, timings=None, now_fn=None, sl
 
 def run_watchdog(cfg, io, gh, now=None, log=None, environ=None):
     """Cron entry. Starts a loop ONLY when no loop is alive and nobody typed STOP. Returns 0 always (a failed
-    dispatch is logged; the next cron tick tries again)."""
+    dispatch or a sheet quota that does not clear is logged; the next cron tick tries again)."""
     now = now or datetime.now(timezone.utc)
     log = log or make_logger(cfg, environ)
-    cells = io.read().cells
+    log_quota_waits(io, log)
+    try:
+        cells = io.read().cells
+    except quota.QuotaWait:
+        # Google's read quota is used up (it is shared, not ours alone). Not a failure: the loop that is probably
+        # alive keeps going, and if none is, the next cron tick (15 min) looks again.
+        log("WATCHDOG", action="none", reason="sheet quota still exceeded after waiting, next cron tick tries again")
+        return 0
     if not engine.watchdog_should_start(cells, now):
         log("WATCHDOG", action="none", reason="a loop is alive or STOP is set")
         return 0

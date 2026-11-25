@@ -14,7 +14,7 @@ import os
 import sys
 from datetime import datetime, timezone
 
-from . import config, composio, sheet
+from . import config, composio, quota, sheet
 from .states import Item
 
 
@@ -24,9 +24,14 @@ def cmd_secrets(cfg, a):
     return 0
 
 
+# Longest wait for the Sheets quota, per request, before a mode gives up for now (quota.QuotaWait: exit 0, not a failure).
+WAIT_S = {"loop": 120, "watchdog": 150}  # the watchdog job is limited to 5 min; the loop retries every tick anyway
+WAIT_OTHER_S = 240                       # manual helper jobs (10 min limit)
+
+
 def _io(cfg, a):
     sid = a.sheet_id or (cfg.get("sheet") or {}).get("id")
-    return sheet.SheetIO(composio.Client(), sid)
+    return sheet.SheetIO(composio.Client(), sid, max_wait_s=WAIT_S.get(a.cmd, WAIT_OTHER_S))
 
 
 def cmd_probe(cfg, a):
@@ -47,12 +52,10 @@ def cmd_init(cfg, a):
     now = datetime.now(timezone.utc)
     items = [Item(n=i, source="FAKE-%d" % i, kind="fake") for i in range(1, a.fake + 1)] if a.fake > 0 else None
     data = sheet.init_payload(cfg, now, items)
-    io.c.execute("GOOGLESHEETS_UPDATE_VALUES_BATCH",
-                 {"spreadsheet_id": io.id, "valueInputOption": "RAW", "data": data})
+    io.update(data)
     reach = sheet.reach_payload(cfg)
     if reach:  # formula cell: USER_ENTERED, separate call
-        io.c.execute("GOOGLESHEETS_UPDATE_VALUES_BATCH",
-                     {"spreadsheet_id": io.id, "valueInputOption": "USER_ENTERED", "data": reach})
+        io.update(reach, "USER_ENTERED")
     print("init OK: %d ranges, %d queue rows" % (len(data), len(data[1]["values"]) - 1))
     return 0
 
@@ -102,6 +105,10 @@ def main(argv=None):
     try:
         return {"secrets": cmd_secrets, "probe": cmd_probe, "init": cmd_init, "tick": cmd_tick,
                 "loop": cmd_loop, "watchdog": cmd_watchdog}[a.cmd](cfg, a)
+    except quota.QuotaWait as e:
+        # Never a failed run because of Google's quota: say so plainly and exit 0 (the loop / cron try again).
+        print("QUOTA: %s; stopped waiting for now, nothing else is wrong. Run again later." % e)
+        return 0
     except (composio.ComposioError, ValueError) as e:
         print("ERROR:", e)
         return 1

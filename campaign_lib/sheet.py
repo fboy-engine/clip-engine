@@ -179,9 +179,15 @@ class SheetIO:
                          "values": [[iso(now), a, b] for a, b in log_lines]})
             data.append({"range": "%s!B%d" % (CAMPAIGN, CELLS["log_rows"]), "values": [[start - 1 + len(log_lines)]]})
         if data:
-            self._exec("GOOGLESHEETS_UPDATE_VALUES_BATCH",
-                       {"spreadsheet_id": self.id, "valueInputOption": "RAW", "data": data}, "write")
+            self.update(data)
         return len(data)
+
+    def update(self, data, input_option="RAW"):
+        """One raw UPDATE_VALUES_BATCH (ranges + values) with the same quota back-off as every other request.
+        USER_ENTERED is only for formula cells (the Reach link)."""
+        self._snap = None
+        return self._exec("GOOGLESHEETS_UPDATE_VALUES_BATCH",
+                          {"spreadsheet_id": self.id, "valueInputOption": input_option, "data": data}, "write")
 
 
 REACH_CELL = "C10"  # next to the Copy link cell (B10). Only opens the Reach page; nothing is ever submitted.

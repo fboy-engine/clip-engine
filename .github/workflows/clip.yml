@@ -424,7 +424,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: find-${{ github.run_id }}
-          path: out/candidates.json
+          path: |
+            out/candidates.json
+            out/dense.json
           if-no-files-found: warn
       - name: Upload transcription results (json only, no video)
         if: ${{ always() && inputs.transcribe_models != '' }}

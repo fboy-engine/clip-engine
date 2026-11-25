@@ -8,6 +8,7 @@ import os
 
 from . import caption_sources as cs
 from . import captions_verify as cv
+from . import quiet_rescue as qr
 from . import speech_spans as ss
 from . import transcribe
 from . import word_retime as wr
@@ -44,6 +45,7 @@ def run(media, s_f, dur, words, src_w, src_h, model_fn=None, avoid_px=None, key=
     base = sorted((dict(w) for w in words), key=lambda w: w["s"])
     rescued, rinfo = [], {"skipped": "no rescue model"}
     retime_info = {"skipped": "no model"}
+    quiet_info = {"skipped": "no model"}
     if model_fn is not None:
         box = []
 
@@ -61,6 +63,14 @@ def run(media, s_f, dur, words, src_w, src_h, model_fn=None, avoid_px=None, key=
             log("caption retime failed: " + retime_info["error"])
         rescued, rinfo = cs.rescue(pcm, base, spans, lazy)
         log(f"caption rescue: {rinfo['chunk_sec']} s of speech without a word, {rinfo['added']} word(s) added")
+        try:        # quiet speech under loud sound: each still-uncovered stretch alone, high-passed + normalised, two passes must agree
+            left = cs.uncovered(base + rescued, spans)
+            qw, quiet_info = qr.run(pcm, left, base + rescued, lazy)
+            rescued = rescued + qw
+            log(f"caption quiet rescue: {len(left)} stretch(es) still uncovered, {len(qw)} word(s) added")
+        except Exception as e:
+            quiet_info = {"error": f"{type(e).__name__}: {str(e)[:160]}"}
+            log("caption quiet rescue failed: " + quiet_info["error"])
     base = sorted(base + rescued, key=lambda w: w["s"])
     for w in base:
         w["e"] = min(w["e"], dur)
@@ -88,6 +98,7 @@ def run(media, s_f, dur, words, src_w, src_h, model_fn=None, avoid_px=None, key=
                                         f"exclusions (need {ss.MIN_RAW_COVERAGE * 100:.0f}%)")
         check["gate"]["ok"] = False
     check["retime"] = retime_info
+    check["quiet_rescue"] = quiet_info
     check["rescue"], check["ocr_info"], check["ocr_lines"] = rinfo, oinfo, ocr
     check["rescued_words"] = [{"w": w["w"], "s": w["s"], "e": w["e"], "p": w["p"]} for w in rescued]
     log(f"captions check: coverage {check['coverage'] * 100:.0f}% of {check['speech_sec']} s speech, "

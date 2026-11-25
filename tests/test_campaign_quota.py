@@ -1,5 +1,9 @@
 """Quota handling: a fake sheet client that answers with Google's quota error. No network, no real sleeping."""
+import io
+import json
 import unittest
+import urllib.error
+from unittest import mock
 
 from campaign_lib import composio, quota
 
@@ -87,6 +91,63 @@ class Call(unittest.TestCase):
         with self.assertRaises(quota.QuotaWait):
             quota.call(inner, sleep=outer_sleeps.append)
         self.assertEqual(outer_sleeps, [])
+
+
+class _Resp:
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return self.body
+
+
+class HttpLayer(unittest.TestCase):
+    def client(self):
+        return composio.Client(api_key="ck_FAKE123", account_id="acc")
+
+    def test_http_429_is_not_blindly_retried_and_reads_as_a_quota_error(self):
+        calls = []
+
+        def fake(req, timeout=0):
+            calls.append(1)
+            raise urllib.error.HTTPError("u", 429, "Too Many Requests", {}, io.BytesIO(b'{"error":"slow down"}'))
+
+        with mock.patch.object(composio.urllib.request, "urlopen", fake), mock.patch.object(composio.time, "sleep") as sl:
+            with self.assertRaises(composio.ComposioError) as cm:
+                self.client().execute("GOOGLESHEETS_BATCH_GET", {})
+        self.assertEqual(len(calls), 1)
+        sl.assert_not_called()
+        self.assertTrue(quota.is_quota_error(cm.exception))
+
+    def test_a_500_still_gets_its_one_quick_retry(self):
+        calls = []
+
+        def fake(req, timeout=0):
+            calls.append(1)
+            if len(calls) == 1:
+                raise urllib.error.HTTPError("u", 503, "x", {}, io.BytesIO(b"{}"))
+            return _Resp(json.dumps({"successful": True, "data": {"ok": 1}}).encode())
+
+        with mock.patch.object(composio.urllib.request, "urlopen", fake), mock.patch.object(composio.time, "sleep"):
+            self.assertEqual(self.client().execute("X", {}), {"ok": 1})
+        self.assertEqual(len(calls), 2)
+
+    def test_googles_quota_text_inside_a_200_answer_becomes_a_quota_error(self):
+        body = {"successful": False, "error": QUOTA_MSG[len("GOOGLESHEETS_BATCH_GET failed: "):]}
+
+        def fake(req, timeout=0):
+            return _Resp(json.dumps(body).encode())
+
+        with mock.patch.object(composio.urllib.request, "urlopen", fake):
+            with self.assertRaises(composio.ComposioError) as cm:
+                self.client().execute("GOOGLESHEETS_BATCH_GET", {})
+        self.assertTrue(quota.is_quota_error(cm.exception))
 
 
 if __name__ == "__main__":

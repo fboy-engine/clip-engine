@@ -77,7 +77,9 @@ class Client:
                     print("note: 401 with %s, retrying once with %s" % (AUTH_HEADER, ALT_AUTH_HEADER),
                           file=sys.stderr)
                     continue
-                if not retried and e.code in (429, 500, 502, 503, 504):
+                # 429 is NOT retried here: the sheet layer (quota.call) waits with exponential back-off + jitter.
+                # A blind 3 s retry only adds one more request to an already exhausted per-minute quota.
+                if not retried and e.code in (500, 502, 503, 504):
                     retried = True
                     time.sleep(3)
                     continue

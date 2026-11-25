@@ -7,7 +7,7 @@ from fractions import Fraction
 
 import numpy as np
 
-from . import analyze, balance, gates, grade_checks, subject, transcribe
+from . import analyze, balance, gates, grade_checks, panel_check, subject, transcribe
 from . import asr_fix, captions
 from .captions import HL_ON
 
@@ -109,7 +109,7 @@ def subject_output(clip, y0, h, fps=2, w_out=540):
     dets, times = [], []
     for i in range(n):
         im = np.frombuffer(p.stdout[i * size:(i + 1) * size], np.uint8).reshape(hh, w_out, 3)
-        dets.append([(b[0] * w_out, b[1] * hh, b[2] * w_out, b[3] * hh, b[4]) for b in vision.detect_people(im)])
+        dets.append(panel_check.detect_panel(im, w_out))      # one detection call for the grade and the pre-render check
         times.append(i / fps)
     return subject.summarize_output(subject.classify_output(dets, w_out), times)
 

@@ -16,7 +16,7 @@ from fractions import Fraction
 import numpy as np
 
 from . import (asr_fix, balance, caption_gaps, caption_lane, caption_sources, captions, captions_pass, cam_enhance, cam_layout, camfind, camresolve, cam_sr, config,
-               download, exclusion, hooks, layout, select_clean, srcinfo, subject, track, transcribe, trim, vision)
+               download, exclusion, hooks, layout, panel_check, select_clean, srcinfo, subject, track, transcribe, trim, vision)
 from .cropplan import punch_curve, smooth
 
 OUT_W, OUT_H = config.OUT_W, config.OUT_H
@@ -721,6 +721,18 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
             raise ValueError(f"tracking gate failed: subject inside the panel in {sub_plan['in_panel_pct']}% of sampled frames "
                              f"(needs >= {TRACK_GATE_PCT:g}%); sources {trk['sources_pct']}; cut at {sub_plan['cut_times'][:12]} "
                              f"(out/tracking.json has every sample)")
+
+        # A2: the grade's own measurement (same detector, same 540 px panel, same ok/cut rule, 95%), BEFORE the cam work.
+        # The tracking gate above only looks at the tracker's own boxes; this is what the post-render grade will say.
+        pc = panel_check.run(media, s_f, dur, src_w, src_h, bxs, fps, log=log)
+        trk["panel_check"] = {k: v for k, v in pc.items() if k != "labels"}
+        sub_plan["panel_check"] = trk["panel_check"]
+        with open(os.path.join(out_dir, "tracking.json"), "w") as f:
+            json.dump(trk, f, indent=1)
+        if not pc["ok"]:
+            raise ValueError("panel check failed (the grade's own measurement, so this clip would fail the grade): " + pc["detail"]
+                             + " (out/tracking.json has the numbers; the render-time tracker said "
+                             + f"{sub_plan['in_panel_pct']}%)")
 
         cbx = None
         cam_info = {"found": use_cam, "mode": mode, "search": cam_search}

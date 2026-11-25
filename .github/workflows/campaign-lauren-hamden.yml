@@ -1,6 +1,6 @@
 # Lauren Hamden campaign. Own file, own concurrency groups, never touches clip.yml.
 # Modes:
-#   loop      = the engine: ONE run ticks every 30-60 s, hands over to a successor at about 5 h 30 min (the
+#   loop      = the engine: ONE run ticks once a minute (one sheet read per tick; a Sheets quota answer is waited out, never a failure), hands over to a successor at about 5 h 30 min (the
 #               successor goes into the OTHER slot, so both overlap and there is no gap), hard stop before 6 h.
 #               Never renders: rendering is a separate clip.yml run that the loop dispatches and polls.
 #   watchdog  = cron entry only. Starts a loop when no heartbeat is alive and STOP is not set. Never loops itself.

@@ -365,12 +365,12 @@ def valid_starts(strip, fps, rms, hop, words, t_lo, t_hi, min_left=25.0, secs=3.
     return out, {**why, "valid": len(out)}
 
 
-def word_ends(words, lo, hi, pad=0.35):
+def word_ends(words, lo, hi, pad=0.35, min_gap=0.2):
     """[(end_s, word_index)]: cut points just after a word (same rules as payoff_end: a gap of >= 0.2 s follows) in [lo, hi]."""
     out = []
     for i, w in enumerate(words):
         nxt = words[i + 1]["s"] if i + 1 < len(words) else float("inf")
-        if nxt - w["e"] < 0.2 and i + 1 < len(words):
+        if nxt - w["e"] < min_gap and i + 1 < len(words):
             continue
         e = min(w["e"] + pad, w["e"] + (nxt - w["e"]) * 0.8)
         if e > hi and w["e"] + MIN_TAIL <= hi:
@@ -380,22 +380,28 @@ def word_ends(words, lo, hi, pad=0.35):
     return out
 
 
+DENSE_GAP_TIERS = (0.2, 0.12)      # a pause of 0.2 s first (as payoff_end); non-stop talk: a 0.12 s breath, still after a word end
+
+
 def dense_cut(words, starts, env_end, min_len=25.0, max_len=DENSE_MAX):
     """Pick (t0, t1) with min_len <= t1-t0 <= max_len from `starts` (valid starts) and word-end cut points, maximising the
     share of the clip covered by words. Ties: a finished sentence, then the earlier start. Never lowers a gate: the caller still
     runs every check. Raises ValueError when no start has a word-end cut point in range. -> (t0, t1, info)."""
-    best, n_ends = None, 0
-    for t0 in starts:
-        for e, i in word_ends(words, t0 + min_len, min(t0 + max_len, env_end)):
-            n_ends += 1
-            cov = window_coverage(words, t0, e)
-            bonus = 1 if words[i]["w"].rstrip().endswith((".", "!", "?")) else 0
-            key = (round(cov, 4), bonus, -t0)
-            if best is None or key > best[0]:
-                best = (key, t0, e, i, cov)
+    best, n_ends, tier = None, 0, None
+    for tier in DENSE_GAP_TIERS:          # natural pauses first; the breath tier only when no start has a pause cut point
+        for t0 in starts:
+            for e, i in word_ends(words, t0 + min_len, min(t0 + max_len, env_end), min_gap=tier):
+                n_ends += 1
+                cov = window_coverage(words, t0, e)
+                bonus = 1 if words[i]["w"].rstrip().endswith((".", "!", "?")) else 0
+                key = (round(cov, 4), bonus, -t0)
+                if best is None or key > best[0]:
+                    best = (key, t0, e, i, cov)
+        if best is not None:
+            break
     if best is None:
         raise ValueError(f"dense cut: no word-end cut point {min_len:g}-{max_len:g} s after any of {len(starts)} valid starts "
                          f"(window ends {env_end:.1f}s): skip this moment")
     _, t0, e, i, cov = best
     return round(t0, 3), round(e, 3), {"mode": "dense", "coverage_planned": round(cov, 3), "starts": len(starts),
-                                       "ends_tried": n_ends, "after_word": words[i]["w"]}
+                                       "ends_tried": n_ends, "min_gap_s": tier, "after_word": words[i]["w"]}

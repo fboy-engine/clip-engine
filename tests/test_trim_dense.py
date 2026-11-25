@@ -50,6 +50,19 @@ class DenseCut(unittest.TestCase):
         self.assertFalse(trim.inside_word(words, t1))
 
 
+class Continuous(unittest.TestCase):
+    def test_nonstop_talk_uses_the_breath_tier(self):
+        words = talk(0, 60, 0.5)            # 0.15 s between words: no 0.2 s pause anywhere
+        t0, t1, info = trim.dense_cut(words, [0.0, 2.0], 60.0)
+        self.assertEqual(info["min_gap_s"], 0.12)
+        self.assertTrue(25.0 <= t1 - t0 <= trim.DENSE_MAX)
+        self.assertFalse(trim.inside_word(words, t1))
+
+    def test_pauses_win_over_breaths(self):
+        _, _, info = trim.dense_cut(talk(0, 60), [0.0], 60.0)
+        self.assertEqual(info["min_gap_s"], 0.2)
+
+
 class ValidStarts(unittest.TestCase):
     def test_same_gates_as_pick_start(self):
         rng = np.random.default_rng(0)

@@ -137,6 +137,19 @@ def is_twitch(url):
     return bool(TWITCH_RE.match((url or "").strip()))
 
 
+TWITCH_VOD_RE = re.compile(r"^https?://(?:[a-z0-9-]+\.)?twitch\.tv/(?:videos|v)/\d+", re.I)
+
+
+def is_twitch_vod(url):
+    """A Twitch stream recording (twitch.tv/videos/<id>). Its yt-dlp format ids are 1080p60/720p60/..., not the clip ids
+    1080/720/..., and it is far too long to fetch whole: it goes through the section download (fetch_window)."""
+    return bool(TWITCH_VOD_RE.match((url or "").strip()))
+
+
+def is_twitch_clip(url):
+    return is_twitch(url) and not is_twitch_vod(url)
+
+
 def fetch_twitch_clip(url, out_dir, runner=run_stream):
     """A Twitch clip is one short mp4 that yt-dlp reads anonymously: NO cookies, NO proxy/WARP, no player-client fallback,
     no section cut (start/end are not used). Best of 1080/720/480/360 (never a portrait format). Two attempts at most.

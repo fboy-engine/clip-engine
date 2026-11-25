@@ -86,7 +86,7 @@ def cmd_fetch_twitch(a):
 
 
 def cmd_fetch(a):
-    if download.is_twitch(a.url):
+    if download.is_twitch_clip(a.url):      # a clip is one short file; a VOD (twitch.tv/videos/<id>) is cut as a section below
         return cmd_fetch_twitch(a)
     # live streams use the same path: the section is cut from the DVR window
     if not a.end > a.start >= 0:

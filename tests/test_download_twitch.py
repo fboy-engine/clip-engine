@@ -15,6 +15,31 @@ class TwitchDownload(unittest.TestCase):
         for u in ("https://www.youtube.com/watch?v=LHoHInbPkk0", "", None, "https://nottwitch.tv.example.com/x"):
             self.assertFalse(download.is_twitch(u), u)
 
+    def test_vod_is_not_a_clip(self):
+        # run 45591019498: the VOD went down the clip path with clip format ids and failed "Requested format is not available"
+        for u in ("https://m.twitch.tv/videos/2934045907", "https://www.twitch.tv/videos/2934045907?t=1h", "http://twitch.tv/v/12"):
+            self.assertTrue(download.is_twitch(u), u)
+            self.assertTrue(download.is_twitch_vod(u), u)
+            self.assertFalse(download.is_twitch_clip(u), u)
+        for u in (URL, "https://clips.twitch.tv/Y", "https://www.twitch.tv/x/clip/Y"):
+            self.assertTrue(download.is_twitch_clip(u), u)
+            self.assertFalse(download.is_twitch_vod(u), u)
+
+    def test_vod_uses_the_section_download(self):
+        seen = []
+
+        def runner(cmd, timeout):
+            seen.append(cmd)
+            with open(os.path.join(d, "source.mp4"), "wb") as f:
+                f.write(b"x")
+            return 0, ""
+        with tempfile.TemporaryDirectory() as d:
+            download.fetch_window("https://m.twitch.tv/videos/2934045907", 300, 900, d, runner=runner)
+        cmd = seen[0]
+        self.assertIn("--download-sections", cmd)
+        self.assertEqual(cmd[cmd.index("--download-sections") + 1], "*300-900")
+        self.assertNotEqual(cmd[cmd.index("-f") + 1], "1080/720/480/360")
+
     def test_command_is_anonymous_whole_clip_and_landscape_only(self):
         seen = []
 

@@ -18,28 +18,28 @@ Campaign (Reach, "$5,000 Lauren Hamden GTA 6 Clipping Campaign"): Instagram Reel
 **NO REAL UPLOAD until the user says "test upload now".** Dry-run only before that.
 After the first approved clip: remind the user to pin the campaign to a tagged engine version (e.g. lauren-v1).
 
-## STATE (fresh check 2026-11-25 08:45Z)
+## STATE (rewritten 2026-11-25 ~15:10 Karachi / 10:10Z by Claude session 2)
 Part A = clip engine. Part B = campaign loop + Google Sheet + Apps Script panel.
-- CI (unit-tests) green on every recent push, including the two docs commits after 811e220.
-- **No clip has passed every gate yet.** Main blocker. No `clip` workflow run has been dispatched since 01:15Z (last two: 45524414788 failure = Optimistic captions 77%; 45524414656 cancelled).
-- Loop run 45546917364 (campaign-lauren-hamden): job "loop" still IN PROGRESS since 04:27Z (healthy: setup steps ok, step "Loop" running, no failure). It self-hands-off at ~5h30, i.e. about 09:57Z, and the cron watchdog restarts it if it dies. Watchdog run 45546899576 succeeded. No render dispatched by the loop yet.
-- Part B quota crashes fixed (back-off, wait-and-retry, exit 0).
-- Gemini: engine got HTTP 403 (not a rate limit). User deleted the old project and made a NEW Google Cloud project `clip-enginex`, imported it in AI Studio, created a NEW key and saved it in the GitHub secret. AI Studio Playground answers fine. NOT yet proven inside the engine: first job is A0 below. Do NOT delete the other project `clip-engine-bot` (it has the YouTube API enabled, likely for the later YouTube phase).
-
-### Best clip so far: Golden
-- Run 45518671433: rendered, captions 96%, but GRADE FAIL: hook missing, subject-in-panel 77.4% (needs 95%).
-- Run 45524414501: captions 90% FAIL (3.98 s gaps), hook found.
-- Two Golden runs differ (trim/window, 83 vs 86 words, hook empty vs found). UNEXPLAINED nondeterminism. Find out why.
-- Golden's hook text contains a word that could get the Reel flagged: pick safer wording.
-- Render-time tracking gate says 85% but post-render grade says 95% and measured 77.4%: they disagree. Make them measure the same frames, then fix tracker/crop until real >= 95%.
-- Other clips: Optimistic tracking 96.1% pass, captions 77% fail. Muddy tracking 93.5%, captions 68% (needs "nice and slow", user is certain it is said). Attractive tracking 50.8%. Peaceful no cam (skip is correct).
+- CI (unit-tests) green on every push of this session (176d077, 99c8cc5, 5bb6122, ae6a96e, cddd9e3, 878f114).
+- **Still no clip has passed every gate.** The blockers are now known per clip (see FINDINGS). The campaign loop is PAUSED (campaign.json "pause": true, cddd9e3): it renders nothing and skips nothing until a clip passes. Set it to false to run.
+- Loop run 45546917364 was healthy at 08:45Z (self-hands-off ~09:57Z, watchdog restarts it). Check the newest campaign-lauren-hamden run before relying on this line.
+- Gemini: key works but Google answers 403 "free tier not available for this project, set up billing" on every model. USER ACTION needed (billing on `clip-enginex`). Engine runs without Gemini (local ASR, local hook).
+- Real source (VOD https://m.twitch.tv/videos/2934045907, "GTA 6 LAUNCH!!!!", 3772 s) CANNOT be downloaded anonymously: yt-dlp "Requested format is not available" (run 45591019498, anonymous, no cookies). Likely sub-only/restricted. USER ACTION or a different source.
+- Test-clip scan with the new code (all dry-run, no upload):
+  - Golden (45587614373): hook OK ("speech_local"), panel check 77.4% (needs 95%): refused early. Unframeable, see FINDINGS.
+  - Optimistic (45587614506): panel check 100%, tracking 97.7%, hook "The car's about to blow up". FAILS captions only: 74% of 14.9 s speech (need 90%) and words cover 29% of the 43.9 s window (backstop needs 75%). Sparse speech, not fixable by ASR.
+  - Slick (45589979889): no confident cam, skip is correct. Cogent (45589991378): silent in the window, skip. Attractive (45589995827): last word at 22.1 s, no 27-29 s cut point; tracking was 50.8%. Muddy first try (45589974573): no word-end cut point 27-29 s (window too tight); re-run 0-36 s dispatched. Tall first try: envelope 2-29 s shorter than 25 s; re-run 0-31 s dispatched.
+- Not done: A3 (captions recovery), A4, A5, B2, B4, B5.
 
 ## FINDINGS 2026-11-25 (Claude session 2)
 - **A0 Gemini**: key + secret name OK (GEMINI_API_KEY in code and workflows). ListModels works, chain starts gemini-3.8-flash. EVERY model answers HTTP 403 "free tier is not available for this project, set up billing" (gemini-check run 45579380310). Code cannot fix it. USER: enable billing on Google Cloud project clip-enginex (or make a key in a project/account where the free tier exists). Engine does not crash: it falls back to local ASR + local hook. Old Golden runs also had this 403, so Gemini is NOT the cause of the run-to-run difference.
 - **A1 hook-empty**: local ASR gives lowercase text with no punctuation and no pauses, so no sentence or clause fit 6 words. Fixed 176d077: deterministic local phrase (hooks.local_phrase), flaggable words filtered (hooks.UNSAFE, run 45524414501 had "gay" in its hook). Tests: tests/test_hook_local.py.
 - **A1 nondeterminism (unproven)**: runs 45518671433 vs 45524414501 differ in transcript (83 vs 86 words, capitals, "shout" vs "Shower") on the same clip. Same model/beam; asked end differed (40 vs 37) but both clamp to the 37.6 s file. Likely int8 numerics differing by runner CPU. 99c8cc5 logs an "asr fingerprint" (cpu, threads, span, transcript sha) in every render. If two runs on the same input show different sha with different cpu, pin float32.
 - **A1/A2 subject-in-panel**: render gate (91.2%) and grade (77.4%) measured different things. Render tracker detects on a 960 px whole frame; grade detects on the 540 px panel. At every grade "cut" time (2, 2.5, 5, 6.5, 13, 14.5, 15, 20, 20.5, 23, 23.5, 26.5 s) the tracker had a SECOND, bigger person box (x 513-1304) ending at the cam/side-panel edge (crop can reach at most x=1299). Golden's character fills 75-90% of the crop and touches the right limit; this cannot be framed by moving the crop. Golden is a poor source for the 95% rule. 5bb6122: panel_check runs the grade's measurement before the cam work and refuses the clip with the grade's numbers.
-- Runs dispatched with the new code: see STATE.
+- **A2 proven** (run 45587614373): the new panel check printed 77.4% inside on 93.0% detected, cut at the SAME 12 times the grade reported. Render gate and grade now measure the same frames; the 85% tracker gate stays as an early filter only.
+- **Nondeterminism**: fingerprints now logged. Golden transcripts differ by runner CPU (AMD EPYC 7763 gives the "Shower" transcript, sha 1ff44d5c4140; the 00:31Z run with "shout" was a different CPU). Optimistic cut also changed (25.5 s earlier, 43.9 s now) because the ASR text changed. Fix still open: pin float32 or fixed numerics so the same input gives the same transcript on every runner. Not done.
+- **Captions backstop**: speech_spans.MIN_RAW_COVERAGE 0.75 = words must cover 75% of the whole clip window. Clips with sparse speech (Optimistic) can never pass; choose speech-dense sources (the streamer talking most of the time). Rule left untouched.
+- **B3 already built**: campaign_lib/instagram.py uses the RESUMABLE upload (no public video URL needed), dry-run plan + "ONE:<n>" sheet switch. Untested live (as intended).
 
 ## TO DO (in this order)
 ### Part A (engine)
@@ -50,9 +50,9 @@ Part A = clip engine. Part B = campaign loop + Google Sheet + Apps Script panel.
 - [ ] A4. Muddy second stacked cam. Slick. Sharpness gate (C). Stream rule: only GTA VI chapters of https://m.twitch.tv/videos/2934045907 plus a confident cam.
 - [ ] A5. Ask the user what the A4 reference clip is (only if truly needed).
 ### Part B (campaign)
-- [ ] B1. Add a PAUSE switch (sheet cell or campaign.json flag) so the loop does not render or skip sources until Part A passes a clip. Failed clips must be parked as NEEDS_FIX / retried, never silently consumed as SKIPPED.
+- [x] B1 (cddd9e3). Add a PAUSE switch (sheet cell or campaign.json flag) so the loop does not render or skip sources until Part A passes a clip. Failed clips must be parked as NEEDS_FIX / retried, never silently consumed as SKIPPED.
 - [ ] B2. End-to-end dry run of the panel: APPROVE -> dry-run upload -> permalink and "submit to Reach before HH:MM" -> 150-min wait -> next clip. Confirm the Apps Script panel (docs/apps_script/lauren/) is deployed with the latest code. The panel runs on Google's side under the user's account; it is NOT hit by the shared Composio quota. Only the GitHub loop's Sheet access via Composio is.
-- [ ] B3. Decide and build how the video reaches Instagram. Graph API container needs a PUBLIC video URL (a GitHub Actions artifact is NOT public). Options: a public GitHub Release asset on this public repo, or resumable upload. Dry-run it.
+- [x] B3 (already in instagram.py, resumable upload, no public URL). Decide and build how the video reaches Instagram. Graph API container needs a PUBLIC video URL (a GitHub Actions artifact is NOT public). Options: a public GitHub Release asset on this public repo, or resumable upload. Dry-run it.
 - [ ] B4. Finish the "Ready for first real post" checklist in docs/CAMPAIGN_HANDOFF.md.
 - [ ] B5. Only after the user says "test upload now": one real upload, report permalink, remind about tagging lauren-v1.
 ### Later / user decisions (do not start)

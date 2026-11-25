@@ -44,6 +44,15 @@ class LocalHook(unittest.TestCase):
         self.assertNotIn(hooks.last_token(h), hooks.DANGLING)
         self.assertNotIn(hooks._tok(h)[0], hooks.FRAGMENT_START)
 
+    def test_golden_run_hook_is_not_a_fragment(self):
+        # run 45587614373 made "a man Shower as well before": starts on an article, stops on "before"
+        ws = W("I've never seen a man Shower as well before Wait this is actually Going to teach the public How to wash themselves")
+        h, src, _ = hooks.phrase_hook("", ws)
+        self.assertTrue(h)
+        self.assertNotIn(hooks._tok(h)[0], hooks.FRAGMENT_START)
+        self.assertNotIn(hooks.last_token(h), hooks.LOCAL_DANGLING)
+        self.assertNotIn(hooks.last_token(h), hooks.DANGLING)
+
     def test_too_little_speech_gives_no_hook(self):
         self.assertEqual(hooks.phrase_hook("", W("uh yeah"))[:2], ("", "none"))
 

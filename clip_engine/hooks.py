@@ -185,7 +185,11 @@ UNSAFE = re.compile(r"^(gay\w*|homo\w*|lesbian\w*|trann\w*|retard\w*|spastic\w*|
                     r"penis|vagina|boob\w*|tits?|cum|anal|nuts|balls|damn\w*|hell)$", re.I)
 LOCAL_PAUSE = 0.25       # a pause this long splits the speech into runs for the local fallback
 LOCAL_MIN_WORDS = 3
-FRAGMENT_START = {"and", "but", "so", "or", "because", "then", "which", "that", "uh", "um", "like", "wait"}
+FRAGMENT_START = {"and", "but", "so", "or", "because", "then", "which", "that", "uh", "um", "like", "wait", "a", "an", "the", "as", "well",
+                  "of", "to", "in", "on", "at", "for", "with", "by", "from", "is", "are", "was", "were", "be"}
+# a local line must not stop on one of these either (words that open the next clause)
+LOCAL_DANGLING = {"before", "after", "when", "while", "where", "what", "how", "why", "also", "just", "really", "very", "gonna", "going",
+                  "not", "no", "yeah", "okay", "ok", "well", "now"}
 
 
 def unsafe(text):
@@ -229,7 +233,7 @@ def local_phrase(words, first, max_start=20.0):
                 txt = clean_hook(" ".join(w["w"] for w in c))
                 if not txt or not is_complete(txt) or unsafe(txt) or duplicates(txt, first):
                     continue
-                if _tok(txt)[0] in FRAGMENT_START:
+                if _tok(txt)[0] in FRAGMENT_START or last_token(txt) in LOCAL_DANGLING:
                     continue
                 sc = (1.0 if 4 <= size <= 6 else 0.0) + (1.5 if i + size == n else 0.0) + (1.0 if i == 0 else 0.0)
                 sc += 2.0 if txt.rstrip().endswith(("?", "!")) else 0.0

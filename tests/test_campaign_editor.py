@@ -11,7 +11,7 @@ from campaign_lib import config, editor, states
 from campaign_lib.ghclient import GitHubError
 from campaign_lib.states import Item
 
-CFG = config.load()
+CFG = {**config.load(), "pause": False}     # the real file has PAUSE on; these tests are about the running loop
 NOW = datetime(2026, 11, 24, 10, 0, 0, tzinfo=timezone.utc)
 ISO = lambda d: d.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -145,10 +145,11 @@ class FindRun(unittest.TestCase):
 
 
 class Finish(unittest.TestCase):
-    def running(self, grade, render=None, conclusion="success", **zk):
+    def running(self, grade, render=None, conclusion="success", attempt=editor.MAX_FIX_TRIES, cfg=None, **zk):
         gh, its = FakeGH(), items(1, 2)
-        ed = editor.Editor(gh, CFG, probe)
+        ed = editor.Editor(gh, cfg or CFG, probe)
         ed.advance(its, NOW, [])
+        its[0].note = "attempt %d" % attempt     # default: no retries left, so a failure is a skip
         its[0].run = "900"
         gh.run_info["900"] = {"status": "completed", "conclusion": conclusion, "created_at": ISO(NOW)}
         gh.zips["900"] = make_zip(grade, render if render is not None else {"hook": {"text": "WAIT WHAT IS THAT"}}, **zk)
@@ -207,6 +208,65 @@ class Finish(unittest.TestCase):
         gh.run_info["900"] = {"status": "in_progress", "created_at": ISO(NOW)}
         ed.advance(its, NOW + timedelta(seconds=editor.MAX_WAIT_S + 60), [])
         self.assertEqual(its[0].state, "SKIPPED")
+
+
+class NeedsFix(Finish):
+    def test_first_failure_is_recut_at_once_with_a_different_window(self):
+        gh, its, ed = self.running(BAD, attempt=1)
+        log = []
+        ed.advance(its, NOW + timedelta(minutes=30), log)
+        self.assertIn("NEEDS_FIX", [e[0] for e in log])       # parked with the reason ...
+        self.assertEqual(its[0].state, "EDITING")             # ... and re-cut in the same pass (head of the queue)
+        self.assertTrue(its[0].note.startswith("attempt 2"))
+        self.assertEqual(its[1].state, "QUEUED")
+        old, new = gh.dispatched[0][1], gh.dispatched[-1][1]
+        self.assertEqual(old["url"], new["url"])
+        self.assertNotEqual(old["render_start"], new["render_start"])
+
+    def test_failure_reason_is_kept_in_the_log_until_the_retry_overwrites_it(self):
+        gh, its, ed = self.running(BAD, attempt=1)
+        log = []
+        ed.advance(its, NOW + timedelta(minutes=30), log)
+        why = [e[1] for e in log if e[0] == "NEEDS_FIX"][0]
+        self.assertIn("captions 90%", why)
+
+    def test_skipped_only_after_the_last_try(self):
+        gh, its, ed = self.running(BAD, attempt=editor.MAX_FIX_TRIES - 1)
+        ed.advance(its, NOW + timedelta(minutes=30), [])
+        self.assertNotEqual(its[0].state, "SKIPPED")
+        gh2, its2, ed2 = self.running(BAD, attempt=editor.MAX_FIX_TRIES)
+        ed2.advance(its2, NOW + timedelta(minutes=30), [])
+        self.assertEqual(its2[0].state, "SKIPPED")
+
+    def test_window_shift_keeps_25_seconds(self):
+        self.assertEqual(editor.clip_window(37.7, None, shift=4.0), (6.0, 33.0))
+        self.assertEqual(editor.clip_window(37.7, None, shift=12.0), (2.0, 29.0))     # would leave < 25 s: no shift
+        self.assertEqual(editor.clip_window(37.7), (2.0, 29.0))
+
+
+class Pause(unittest.TestCase):
+    PCFG = {**CFG, "pause": True}
+
+    def test_campaign_json_ships_paused(self):
+        self.assertTrue(config.load().get("pause"))
+
+    def test_paused_loop_renders_nothing_and_skips_nothing(self):
+        gh, its = FakeGH(), items(1, 2)
+        editor.Editor(gh, self.PCFG, probe).advance(its, NOW, [])
+        self.assertEqual(gh.dispatched, [])
+        self.assertEqual([i.state for i in its], ["QUEUED", "QUEUED"])
+
+    def test_paused_failure_is_parked_never_consumed(self):
+        gh, its = FakeGH(), items(1, 2)
+        ed = editor.Editor(gh, CFG, probe)
+        ed.advance(its, NOW, [])
+        its[0].run, its[0].note = "900", "attempt 3"
+        gh.run_info["900"] = {"status": "completed", "conclusion": "success", "created_at": ISO(NOW)}
+        gh.zips["900"] = make_zip(BAD, {})
+        paused = editor.Editor(gh, self.PCFG, probe)
+        paused.advance(its, NOW + timedelta(minutes=30), [])
+        self.assertEqual(its[0].state, "QUEUED")            # attempt 3 would skip when not paused
+        self.assertIn("NEEDS_FIX (paused)", its[0].note)
 
 
 class Fetch(unittest.TestCase):

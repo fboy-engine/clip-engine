@@ -3,7 +3,9 @@ the run, and reads its artifact.
 
   QUEUED  -> EDITING   dispatch clip.yml for the next link (item.run = PENDING@<utc> until the run id is found)
   EDITING -> READY     run succeeded AND grade.json has no failed check: caption filled in
-  EDITING -> SKIPPED   run failed / a gate failed / no clip: the reason is in the Note, the queue moves on
+  EDITING -> QUEUED    run failed / a gate failed: NEEDS_FIX in the Note, re-cut with a different window (MAX_FIX_TRIES)
+  EDITING -> SKIPPED   only after MAX_FIX_TRIES failures, or a source that cannot be used / never finished
+  PAUSE (campaign.json "pause": true): nothing new is rendered and nothing is skipped
 
 One clip is edited at a time (states.next_to_edit). A GitHub error never crashes the loop: it is logged and
 the next tick tries again. Vod sources are handled by vod.py."""
@@ -20,18 +22,23 @@ PENDING = "PENDING@"
 FIND_BACK_S = 60          # a run created this long before our dispatch time may still be ours (clock skew)
 LOST_AFTER_S = 600        # dispatched but no run appeared: try again
 MAX_ATTEMPTS = 3          # dispatch / probe attempts per clip before it is skipped
+MAX_FIX_TRIES = MAX_ATTEMPTS   # a clip that fails a gate is re-cut with a different window this many times, only then SKIPPED
+RETRY_SHIFT_S = 4.0       # each retry starts this much later in the source (only while 25 s or more remain)
+MIN_CLIP_S = 25.0
 MAX_WAIT_S = 3 * 3600     # a clip run still not finished after this long: skip it
 FALLBACK_LINE = "Lauren Hamden stream moment"
 BOT = "github-actions[bot]"
 
 
-def clip_window(duration, rcfg=None):
+def clip_window(duration, rcfg=None, shift=0.0):
     """(render_start, render_end) in the downloaded clip. The whole short clip, minus a 2 s lead, at most
     max_span_s (the cam upscaler time budget). Raises ValueError for a source too short to use."""
     r = rcfg or {}
     start, span = float(r.get("start_s", 2)), float(r.get("max_span_s", 27))
     if duration < start + 10:
         start = 0.0
+    if shift and duration - (start + shift) >= MIN_CLIP_S:      # a retry looks at a different part of the source
+        start += shift
     end = min(float(duration), start + span)
     if end - start < 8:
         raise ValueError("source is only %.0f s long" % duration)
@@ -114,6 +121,8 @@ class Editor:
         try:
             for it in [i for i in items if i.state == "EDITING"]:
                 self._poll(it, items, now, log)
+            if self.cfg.get("pause"):   # PAUSE (campaign.json): no new render, nothing is skipped, until part A passes a clip
+                return
             if not any(i.state == "EDITING" for i in items):
                 nxt = states.next_to_edit(items)
                 if nxt is not None:
@@ -134,6 +143,21 @@ class Editor:
         it.note = ("skipped: " + reason)[:240]
         log.append(("SKIPPED", "clip #%d: %s" % (it.n, reason[:120])))
 
+    def _fail(self, it, reason, log):
+        """A gate failed or the run failed. Never silently consumed: parked as NEEDS_FIX (back in the queue, reason in the
+        note) and re-cut with a different window; SKIPPED only after MAX_FIX_TRIES. While PAUSE is on it is only parked."""
+        n = self._attempts(it)
+        paused = bool(self.cfg.get("pause"))
+        if it.kind == "vod" and not paused:       # a vod has its own window logic (vod.py): a failed render keeps its old path
+            return self._skip(it, reason, log)
+        if paused or n < MAX_FIX_TRIES:
+            states.transition(it, "QUEUED")
+            it.run = ""
+            it.note = ("attempt %d NEEDS_FIX%s: %s" % (n, " (paused)" if paused else "", reason))[:240]
+            log.append(("NEEDS_FIX", "clip #%d: %s" % (it.n, reason[:120])))
+            return
+        self._skip(it, reason, log)
+
     # ---- start
     def _start(self, it, now, log):
         if it.kind == "vod":
@@ -143,7 +167,7 @@ class Editor:
         n = self._attempts(it)
         try:
             dur = float(self.probe(it.source)["duration"])
-            start, end = clip_window(dur, self.cfg.get("render"))
+            start, end = clip_window(dur, self.cfg.get("render"), shift=RETRY_SHIFT_S * n)
         except Exception as e:  # unreachable link, deleted clip, too short ...
             if isinstance(e, ValueError) or n + 1 >= MAX_ATTEMPTS:
                 return self._skip(it, "source not usable (%s)" % type(e).__name__, log)
@@ -186,14 +210,14 @@ class Editor:
             cam = _read(zf, "cam_find.json") if zf else None
             if cam and cam.get("reasons"):
                 why += " | cam: %s" % str(cam["reasons"][0])[:100]
-            return self._skip(it, why, log)
+            return self._fail(it, why, log)
         ok, why = judge(grade, names)
         if not ok:
-            return self._skip(it, why, log)
+            return self._fail(it, why, log)
         try:
             hook, cap = caption_for(self.cfg, render)
         except capmod.CaptionError as e:
-            return self._skip(it, "caption: %s" % e, log)
+            return self._fail(it, "caption: %s" % e, log)
         it.hook, it.caption, it.note = hook, cap, ""
         states.transition(it, "READY")
         log.append(("READY", "clip #%d passed every gate" % it.n))

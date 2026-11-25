@@ -94,11 +94,12 @@ class HandoffDecision(unittest.TestCase):
         self.assertEqual(loop.decide_step(s, s + timedelta(hours=5, minutes=55), False), "HARD_STOP")
         self.assertLess(engine.HARD_STOP_S, 6 * 3600)
 
-    def test_slots_alternate_and_the_interval_is_30_to_60(self):
+    def test_slots_alternate_and_a_tick_is_never_faster_than_every_60_s(self):
         self.assertEqual((loop.next_slot("a"), loop.next_slot("b"), loop.next_slot("w")), ("b", "a", "a"))
         self.assertEqual(loop.tick_interval({1: "QUEUED"}), 60)
-        for st in ("EDITING", "READY", "AWAITING_APPROVAL", "POSTING"):
-            self.assertEqual(loop.tick_interval({1: "QUEUED", 2: st}), 30)
+        for st in ("EDITING", "READY", "AWAITING_APPROVAL", "POSTING"):  # an active queue is not polled faster either
+            self.assertEqual(loop.tick_interval({1: "QUEUED", 2: st}), 60)
+        self.assertEqual(loop.tick_interval(), loop.TICK_S)
 
 
 class Clock:
@@ -153,7 +154,7 @@ class FullRun(unittest.TestCase):
         elapsed = (clock.now - T0).total_seconds()
         self.assertGreaterEqual(elapsed, engine.HANDOFF_AFTER_S)
         self.assertLess(elapsed, engine.HANDOFF_AFTER_S + 120)  # left within a tick or two: overlap, no long double run
-        self.assertTrue(set(clock.sleeps[1:]) <= {30, 60})  # [0] is the 2 s lock settle
+        self.assertEqual(set(clock.sleeps[1:]), {60})  # [0] is the 2 s lock settle; every tick sleeps 60 s
 
     def test_without_a_successor_the_loop_leaves_before_the_6h_limit_and_releases_nothing_it_offered(self):
         io, clock, gh, logs = MemIO([fake_item(state="QUEUED")]), Clock(), GH(), []

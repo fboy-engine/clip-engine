@@ -190,7 +190,7 @@ def tick(io, cfg, now, fake=False, timings=None, guard=None, extra_values=None, 
             log.append(("POSTING", "clip #%d (intent recorded before the upload)" % i.n))
         flush(write_vals)
         write_vals = {}
-        snap2 = io.read()
+        snap2 = sheet.read_fresh(io)  # re-check after the intent write: always the live sheet
         if guard:
             guard(snap2.cells, now)
         mine = [i for i in fresh if poster.still_mine(snap2.items, i)]

@@ -14,8 +14,9 @@ class FakeSheetClient:
     """Stands in for composio.Client. Holds a tiny sheet; read_quota / write_quota = how many of the next
     requests of that kind are answered with the quota error (the real one is a ComposioError)."""
 
-    def __init__(self, read_quota=0, write_quota=0, other_error=None):
+    def __init__(self, read_quota=0, write_quota=0, other_error=None, down=None):
         self.read_quota, self.write_quota, self.other_error = read_quota, write_quota, other_error
+        self.down = down  # optional callable: True while the whole Sheets quota is exhausted (reads AND writes)
         self.cells = {"lock_run": "", "heartbeat": "", "approve": False}
         self.items = [Item(n=1, source="FAKE-1", kind="fake", state="QUEUED")]
         self.calls = []
@@ -24,6 +25,8 @@ class FakeSheetClient:
         self.calls.append(slug)
         if self.other_error:
             raise composio.ComposioError(self.other_error)
+        if self.down and self.down():
+            raise composio.ComposioError(QUOTA_MSG)
         if slug == "GOOGLESHEETS_BATCH_GET":
             if self.read_quota > 0:
                 self.read_quota -= 1
@@ -39,6 +42,8 @@ class FakeSheetClient:
                 raise composio.ComposioError("HTTP 429 on POST /tools/execute/%s: Too Many Requests" % slug)
             for part in arguments["data"]:
                 rng = part["range"]
+                if rng.startswith("Queue!A2"):
+                    self.items = [sheet.row_item(r) for r in part["values"]]
                 if rng.startswith("Campaign!B"):
                     row = int(rng[len("Campaign!B"):])
                     name = [k for k, v in sheet.CELLS.items() if v == row][0]

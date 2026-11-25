@@ -16,7 +16,7 @@ def longest_quiet(sp, a, b, thr=0.5):
     return best
 
 
-def dense_windows(sp, offset=0.0, lengths=LENGTHS, top=8, min_pct=0.85, max_quiet=2, pad=3):
+def dense_windows(sp, offset=0.0, lengths=LENGTHS, top=8, min_pct=0.80, max_quiet=2, pad=3):
     """[{file_start, file_end, speech_pct, longest_quiet_s, stream_start, render_start, render_end}] best first, no overlap."""
     n = len(sp)
     if n < min(lengths):

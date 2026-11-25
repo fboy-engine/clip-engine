@@ -42,7 +42,7 @@ def run(media, offset, model_name, top, out_dir, cache_dir, gen=gemini.generate)
             print(f"  file {d['file_start']}-{d['file_end']} | stream {d['stream_start']:g}+ | {d['speech_pct']}% | "
                   f"quiet {d['longest_quiet_s']} s | render {d['render_start']}-{d['render_end']}", flush=True)
         if not dense:
-            print("  none: no 26-30 s stretch with 85%+ speech and no pause over 2 s", flush=True)
+            print("  none: no 26-30 s stretch with 80%+ speech and no pause over 2 s", flush=True)
     except Exception as e:
         print(f"dense windows unavailable: {type(e).__name__}: {str(e)[:120]}", flush=True)
     t = time.monotonic()

@@ -2,10 +2,13 @@
 
 The sheet is the single source of truth. Tabs: Campaign (box), Queue, Log.
 Everything is written with RAW so times and links stay plain text."""
+import copy
+import random
 import re
+import time
 from datetime import datetime, timezone
 
-from . import composio
+from . import composio, quota
 from .states import Item
 
 CAMPAIGN, QUEUE, LOG = "Campaign", "Queue", "Log"
@@ -34,6 +37,7 @@ QUEUE_HEAD = ["#", "Source", "Kind", "State", "Moment", "Hook", "Caption", "Note
 LOG_HEAD = ["Time (UTC)", "Event", "Detail"]
 QUEUE_LAST_ROW = 100
 CAMPAIGN_LAST_ROW = 25  # read window of the Campaign tab (cells end at row 22)
+CACHE_TTL_S = 55  # a read is served from memory for less than one tick (60 s): user edits are seen every tick
 TWITCH_URL = re.compile(r"^https://(www\.|m\.)?twitch\.tv/(videos/\d+|[A-Za-z0-9_]+/clip/[A-Za-z0-9_-]+|[A-Za-z0-9_]+/video/\d+)/?(\?.*)?$")
 
 
@@ -70,16 +74,77 @@ class Snapshot:
         self.items, self.cells = items, cells
 
 
+def read_fresh(io):
+    """A read that must see the sheet as it is NOW (lock read-back, re-check after a POSTING intent, release).
+    SheetIO bypasses its memory cache; simple test doubles only have read()."""
+    return getattr(io, "read_fresh", io.read)()
+
+
 class SheetIO:
-    def __init__(self, client, sheet_id):
+    """Sheet access with the Sheets quota in mind.
+
+    * ONE batched request per read (Campaign + Queue ranges together, GOOGLESHEETS_BATCH_GET).
+    * read() serves the last snapshot from memory while no write happened since it was taken and it is younger
+      than ttl_s. Every write drops it ("re-read only after a write"). The tick's own read is still needed once per
+      tick: the panel (APPROVE, Add link, STOP, the real-upload switch) edits the sheet from outside, and a cache
+      alone could never see that.
+    * read_fresh() always goes to the network (lock checks).
+    * Every request retries on a quota / 429 answer with exponential back-off + jitter (quota.call) for at most
+      max_wait_s (None = as long as it takes), then raises quota.QuotaWait, which is never a failure.
+    * stats / summary() count the requests actually sent, so the real reads per minute can be logged."""
+
+    def __init__(self, client, sheet_id, max_wait_s=None, ttl_s=CACHE_TTL_S, sleep=None, rand=None, clock=None,
+                 on_wait=None):
         if not sheet_id:
             raise ValueError("sheet id is empty (campaign.json sheet.id or workflow input sheet_id)")
         self.c, self.id = client, sheet_id
+        self.max_wait_s, self.ttl_s, self.on_wait = max_wait_s, ttl_s, on_wait  # on_wait(kind, attempt, delay_s)
+        self._sleep = sleep or (lambda s: time.sleep(s))
+        self._rand = rand or random.random
+        self._clock = clock or time.monotonic
+        self._snap, self._snap_at, self._read_at = None, 0.0, []
+        self.stats = {"reads": 0, "writes": 0, "cache_hits": 0, "quota_waits": 0, "quota_wait_s": 0.0}
+
+    def _exec(self, slug, args, kind):
+        def attempt():  # one HTTP request to the sheet: counted even when Google rejects it
+            self.stats[kind + "s"] += 1
+            if kind == "read":
+                self._read_at.append(self._clock())
+            return self.c.execute(slug, args)
+
+        def waited(n, delay):
+            self.stats["quota_waits"] += 1
+            self.stats["quota_wait_s"] += delay
+            if self.on_wait:
+                self.on_wait(kind, n + 1, delay)
+
+        return quota.call(attempt, sleep=self._sleep, rand=self._rand, max_wait_s=self.max_wait_s, on_wait=waited)
+
+    def peak_reads_per_min(self):
+        """Most read requests sent inside any 60 s window so far."""
+        ts, best, j = self._read_at, 0, 0
+        for i, t in enumerate(ts):
+            while t - ts[j] >= 60.0:
+                j += 1
+            best = max(best, i - j + 1)
+        return best
+
+    def summary(self):
+        s = dict(self.stats)
+        s["quota_wait_s"] = int(round(s["quota_wait_s"]))
+        s["peak_reads_per_min"] = self.peak_reads_per_min()
+        return s
 
     def read(self):
-        data = self.c.execute("GOOGLESHEETS_BATCH_GET", {
+        if self._snap is not None and (self._clock() - self._snap_at) < self.ttl_s:
+            self.stats["cache_hits"] += 1
+            return copy.deepcopy(self._snap)  # callers mutate items: never hand out the cached objects
+        return self.read_fresh()
+
+    def read_fresh(self):
+        data = self._exec("GOOGLESHEETS_BATCH_GET", {
             "spreadsheet_id": self.id, "valueRenderOption": "UNFORMATTED_VALUE",
-            "ranges": ["%s!A1:B%d" % (CAMPAIGN, CAMPAIGN_LAST_ROW), "%s!A1:N%d" % (QUEUE, QUEUE_LAST_ROW)]})
+            "ranges": ["%s!A1:B%d" % (CAMPAIGN, CAMPAIGN_LAST_ROW), "%s!A1:N%d" % (QUEUE, QUEUE_LAST_ROW)]}, "read")
         vr = composio.find_key(data, "valueRanges")
         if not vr or len(vr) < 2:
             raise composio.ComposioError("unexpected BATCH_GET answer (no valueRanges)")
@@ -93,11 +158,14 @@ class SheetIO:
             it = row_item(row)
             if it:
                 items.append(it)
-        return Snapshot(items, cells)
+        snap = Snapshot(items, cells)
+        self._snap, self._snap_at = snap, self._clock()
+        return copy.deepcopy(snap)
 
     def write(self, now, items=None, values=None, log_lines=None, log_rows=None):
         """values: {cell_name: value}. Each named cell is its own range, so a cell the user edits
         between our read and write (APPROVE, Add link) is only overwritten when we mean to."""
+        self._snap = None  # whatever happens next, the sheet is no longer what we last read
         data = []
         for name, v in (values or {}).items():
             data.append({"range": "%s!B%d" % (CAMPAIGN, CELLS[name]), "values": [[v]]})
@@ -111,8 +179,8 @@ class SheetIO:
                          "values": [[iso(now), a, b] for a, b in log_lines]})
             data.append({"range": "%s!B%d" % (CAMPAIGN, CELLS["log_rows"]), "values": [[start - 1 + len(log_lines)]]})
         if data:
-            self.c.execute("GOOGLESHEETS_UPDATE_VALUES_BATCH",
-                           {"spreadsheet_id": self.id, "valueInputOption": "RAW", "data": data})
+            self._exec("GOOGLESHEETS_UPDATE_VALUES_BATCH",
+                       {"spreadsheet_id": self.id, "valueInputOption": "RAW", "data": data}, "write")
         return len(data)
 
 

@@ -73,6 +73,10 @@ on:
       payoff_phrase:
         description: Phrase the clip should end on (empty = pick a payoff from audio and speech); render_end is the latest allowed end
         default: ""
+      dense_cut:
+        description: Render option - cut 25-30 s from the densest speech stretch inside render_start-render_end (no gate is changed)
+        type: boolean
+        default: false
       cam_corner:
         description: Facecam corner (bottom-left, bottom-right, top-left, top-right), empty = auto-find by face detection, none = gameplay-only
         default: ""
@@ -378,8 +382,10 @@ jobs:
           CAMRECT: ${{ inputs.cam_rect }}
           PAYOFF: ${{ inputs.payoff_phrase }}
           SRCURL: ${{ inputs.url }}
+          DENSE: ${{ inputs.dense_cut }}
         run: |
           ARGS=()
+          [ "$DENSE" = "true" ] && ARGS+=(--dense)
           [ -n "$SRCURL" ] && ARGS+=(--vod-id "$SRCURL")
           [ -n "$CAM" ] && ARGS+=(--cam-corner "$CAM")
           [ -n "$CAMRECT" ] && ARGS+=(--cam-rect "$CAMRECT")

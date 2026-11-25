@@ -474,7 +474,7 @@ def decode_gray_at(media, start, dur, fps, w=96, h=54):
     return buf[:n * w * h].reshape(n, h, w)
 
 
-def plan_cut(media, pr, start, end, words, cam_corner, cam_rect, payoff, notes, log, zones=None):
+def plan_cut(media, pr, start, end, words, cam_corner, cam_rect, payoff, notes, log, zones=None, dense=False):
     """Cut points: first real motion (with sound) at/after `start`; a payoff end at/before `end`.
     Returns (in_s, out_s, trim_info). Raises when the moment has no honest start or end."""
     src_w, src_h = pr["width"], pr["height"]
@@ -500,6 +500,20 @@ def plan_cut(media, pr, start, end, words, cam_corner, cam_rect, payoff, notes, 
     pcm = transcribe.decode_pcm(media, start, env_end)
     rms = balance.rms_db(pcm, transcribe.SR, 0.05)
     rel = [{**w, "s": w["s"] - start, "e": w["e"] - start} for w in words]
+    if dense:     # option: the densest 25-30 s stretch of the window; every start still passes the same opening gate
+        starts, sinfo = trim.valid_starts(strip, PICK_FPS, rms, 0.05, rel, 0.0, span, min_left=config.MIN_LEN)
+        if not starts:
+            raise ValueError(f"dense cut: no start in {start:g}-{env_end:g}s where the shown strip moves and speech follows "
+                             f"with {config.MIN_LEN:g} s left: skip this moment ({sinfo})")
+        r0, r1, dinfo = trim.dense_cut(rel, starts, span, min_len=config.MIN_LEN, max_len=trim.DENSE_MAX)
+        if payoff:
+            notes.append("payoff phrase ignored in dense mode")
+        t0, t1 = start + r0, start + r1
+        why = f"dense cut: {dinfo['coverage_planned']:.0%} of the clip covered by words, ends after '{dinfo['after_word']}'"
+        info = {"asked": [start, end], "in": round(t0, 3), "out": round(t1, 3), "start_motion": sinfo, "start_note": "",
+                "end_reason": why, "facecam_masked": bool(rect), "dense": dinfo}
+        log(f"trim: {why}; in {t0:.2f}s out {t1:.2f}s ({t1 - t0:.1f} s)")
+        return t0, t1, info
     off, sinfo = trim.pick_start(strip, PICK_FPS, rms, 0.05, rel, 0.0, span, min_left=config.MIN_LEN)
     if off is None:
         raise ValueError(f"no start in {start:g}-{env_end:g}s where the shown strip moves and speech or a loud "
@@ -605,7 +619,7 @@ def caption_check(media, s_f, dur, cw_unmasked, src_w, src_h, avoid_px, model, c
 
 
 def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=None, words=None,
-           model="large-v3", cache_dir=None, preset=config.PRESET, log=print, payoff="", vod_id=""):
+           model="large-v3", cache_dir=None, preset=config.PRESET, log=print, payoff="", vod_id="", dense=False):
     """Returns the render.json dict (also written to out_dir). Raises on anything it cannot do honestly."""
     os.makedirs(out_dir, exist_ok=True)
     t0 = time.monotonic()
@@ -638,7 +652,7 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
     shift, open_notes = 0.0, []
     for attempt in range(OPEN_TRIES):
         notes.clear()                       # each attempt re-plans, so its notes start fresh
-        s_c, e_c, trim_info = plan_cut(media, pr, start + shift, end, words, cam_corner, cam_rect, payoff, notes, log, zones)
+        s_c, e_c, trim_info = plan_cut(media, pr, start + shift, end, words, cam_corner, cam_rect, payoff, notes, log, zones, dense=dense)
         s_f, n, dur = frame_window(s_c, e_c, fps)
         if not (config.MIN_LEN <= dur <= config.MAX_LEN):
             raise ValueError(f"clip would be {dur:.1f} s, outside {config.MIN_LEN:g}-{config.MAX_LEN:g} s")

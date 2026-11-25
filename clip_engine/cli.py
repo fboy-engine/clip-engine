@@ -168,7 +168,8 @@ def cmd_render(a):
     try:
         window.check_window(a.start, a.end)
         res = render_clip.render(a.media, a.start, a.end, a.out, a.hook, a.cam_corner, rect,
-                                 model=a.model, cache_dir=a.cache_dir, payoff=a.payoff, vod_id=a.vod_id)
+                                 model=a.model, cache_dir=a.cache_dir, payoff=a.payoff, vod_id=a.vod_id,
+                                 dense=a.dense)
         _step_summary(render_clip.summary_md(res or {}))
     except Exception as e:  # report the real failure, never fake a pass
         msg = f"FAIL render: {type(e).__name__}: {str(e)[:900]}"
@@ -313,6 +314,7 @@ def main(argv=None):
     r.add_argument("--cam-rect", dest="cam_rect", default=None, help="x0,y0,x1,y1 fractions")
     r.add_argument("--payoff", default="", help="phrase the clip should end on (fuzzy match in the transcript)")
     r.add_argument("--vod-id", dest="vod_id", default="", help="stream URL or 11-char id: selects its overlay zones")
+    r.add_argument("--dense", action="store_true", help="cut 25-30 s from the densest speech stretch inside the window (no gate changes)")
     r.add_argument("--model", default="large-v3")
     r.add_argument("--cache-dir", dest="cache_dir", default=transcribe_default_cache())
     r.add_argument("--out", default="out")

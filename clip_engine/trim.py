@@ -306,3 +306,96 @@ def payoff_end(words, start, lo, hi, rms=None, hop=0.05, phrase="", pad=0.35, rm
                          f"{len(tight)} ends in range rejected for a <0.2 s gap, {len(late)} whose end+pad passes {hi:.1f}s)")
     _, e, i, why = best
     return round(e, 3), "payoff heuristic: " + (", ".join(why) or "nearest gap") + f", after '{words[i]['w']}'", notes
+
+
+# ---- dense cut: the densest 25-30 s stretch inside a longer window (an option; no gate is touched) ------------------
+DENSE_MAX = 30.0
+COVER_PAD = 0.10           # same pad as captions_verify.PAD / speech_spans.raw_coverage
+
+
+def window_coverage(words, t0, t1, pad=COVER_PAD):
+    """Share of [t0, t1] that a caption word (+- pad) is on screen for: the same measure as speech_spans.raw_coverage."""
+    if t1 <= t0:
+        return 0.0
+    iv = sorted((max(t0, w["s"] - pad), min(t1, w["e"] + pad)) for w in words if w["e"] + pad > t0 and w["s"] - pad < t1)
+    tot, cur = 0.0, None
+    for a, b in iv:
+        if b <= a:
+            continue
+        if cur and a <= cur[1]:
+            cur[1] = max(cur[1], b)
+        else:
+            if cur:
+                tot += cur[1] - cur[0]
+            cur = [a, b]
+    if cur:
+        tot += cur[1] - cur[0]
+    return min(1.0, tot / (t1 - t0))
+
+
+def valid_starts(strip, fps, rms, hop, words, t_lo, t_hi, min_left=25.0, secs=3.0, gate=None):
+    """Every word-anchored start that pick_start would accept in its "speech" mode (same opening gate on the shown strip,
+    audible, speech follows, never inside a word, at least min_left s left). Nothing is loosened. -> (sorted starts, info)."""
+    if gate is None:
+        from . import gates
+        gate = gates.opening_gate
+    strip = np.asarray(strip)
+    k = max(1, int(round(fps / 10.0)))
+    need = int(round(secs * fps))
+    last = min(t_hi - min_left, (len(strip) - need) / fps)
+    cands = sorted({round(w["s"] - 0.08, 3) for w in _real_words(words) if t_lo <= w["s"] - 0.08 <= last})
+    why = {"candidates": len(cands), "mid_word": 0, "shown_strip_frozen": 0, "silent": 0, "no_speech": 0}
+    out = []
+    for t in cands:
+        if inside_word(words, t):
+            why["mid_word"] += 1
+            continue
+        i0 = int(round(t * fps))
+        seg = strip[i0:i0 + need:k]
+        if not (len(seg) >= 3 and gate(seg, fps / k)[0]):
+            why["shown_strip_frozen"] += 1
+            continue
+        if not audible_at(rms, hop, t):
+            why["silent"] += 1
+            continue
+        if not speech_follows(words, t):
+            why["no_speech"] += 1
+            continue
+        out.append(t)
+    return out, {**why, "valid": len(out)}
+
+
+def word_ends(words, lo, hi, pad=0.35):
+    """[(end_s, word_index)]: cut points just after a word (same rules as payoff_end: a gap of >= 0.2 s follows) in [lo, hi]."""
+    out = []
+    for i, w in enumerate(words):
+        nxt = words[i + 1]["s"] if i + 1 < len(words) else float("inf")
+        if nxt - w["e"] < 0.2 and i + 1 < len(words):
+            continue
+        e = min(w["e"] + pad, w["e"] + (nxt - w["e"]) * 0.8)
+        if e > hi and w["e"] + MIN_TAIL <= hi:
+            e = hi
+        if lo <= e <= hi:
+            out.append((e, i))
+    return out
+
+
+def dense_cut(words, starts, env_end, min_len=25.0, max_len=DENSE_MAX):
+    """Pick (t0, t1) with min_len <= t1-t0 <= max_len from `starts` (valid starts) and word-end cut points, maximising the
+    share of the clip covered by words. Ties: a finished sentence, then the earlier start. Never lowers a gate: the caller still
+    runs every check. Raises ValueError when no start has a word-end cut point in range. -> (t0, t1, info)."""
+    best, n_ends = None, 0
+    for t0 in starts:
+        for e, i in word_ends(words, t0 + min_len, min(t0 + max_len, env_end)):
+            n_ends += 1
+            cov = window_coverage(words, t0, e)
+            bonus = 1 if words[i]["w"].rstrip().endswith((".", "!", "?")) else 0
+            key = (round(cov, 4), bonus, -t0)
+            if best is None or key > best[0]:
+                best = (key, t0, e, i, cov)
+    if best is None:
+        raise ValueError(f"dense cut: no word-end cut point {min_len:g}-{max_len:g} s after any of {len(starts)} valid starts "
+                         f"(window ends {env_end:.1f}s): skip this moment")
+    _, t0, e, i, cov = best
+    return round(t0, 3), round(e, 3), {"mode": "dense", "coverage_planned": round(cov, 3), "starts": len(starts),
+                                       "ends_tried": n_ends, "after_word": words[i]["w"]}

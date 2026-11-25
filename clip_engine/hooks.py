@@ -178,6 +178,68 @@ def _score(cand, start):
     return sc - 0.05 * start
 
 
+# words that must never be in the hook line (a Reel can get flagged for them); they stay in the captions as spoken.
+# Slurs, sexual and drug words, self-harm and hate-group words. A masked word (f***) is never a hook word either.
+UNSAFE = re.compile(r"^(gay\w*|homo\w*|lesbian\w*|trann\w*|retard\w*|spastic\w*|crack|cocaine|heroin|meth|porn\w*|sex\w*|nude\w*|naked|"
+                    r"rape\w*|rapist\w*|suicid\w*|nazi\w*|terroris\w*|jew\w*|slave\w*|bum|ass|asses|arse|piss\w*|crap|cock\w*|"
+                    r"penis|vagina|boob\w*|tits?|cum|anal|nuts|balls|damn\w*|hell)$", re.I)
+LOCAL_PAUSE = 0.25       # a pause this long splits the speech into runs for the local fallback
+LOCAL_MIN_WORDS = 3
+FRAGMENT_START = {"and", "but", "so", "or", "because", "then", "which", "that", "uh", "um", "like", "wait"}
+
+
+def unsafe(text):
+    """True when any word of the line could get the Reel flagged (see UNSAFE) or is a masked word."""
+    for t in (text or "").split():
+        if "*" in t or UNSAFE.match(re.sub(r"^\W+|\W+$", "", t)):
+            return True
+    return False
+
+
+def runs(words, pause=LOCAL_PAUSE):
+    """Split word dicts into runs at a pause or at punctuation (. ? ! , ; :)."""
+    out, cur = [], []
+    for w in words:
+        if (w["e"] - w["s"]) < MIN_WORD_S:
+            continue
+        if cur and w["s"] - cur[-1]["e"] > pause:
+            out.append(cur)
+            cur = []
+        cur.append(w)
+        if w["w"].rstrip().endswith((".", "?", "!", ",", ";", ":")):
+            out.append(cur)
+            cur = []
+    if cur:
+        out.append(cur)
+    return out
+
+
+def local_phrase(words, first, max_start=20.0):
+    """No punctuation and no pauses to lean on (local ASR on fast speech): the best 3-6 word window inside a run of the
+    speech itself. Deterministic: same words in, same hook out. Never ends on a dangling word, never starts on a
+    connector, never contains an unsafe word, never repeats the first caption line. Returns text or ''."""
+    best, best_sc = "", None
+    for run in runs(words):
+        if run[0]["s"] > max_start:
+            break
+        n = len(run)
+        for size in range(min(MAX_WORDS, n), LOCAL_MIN_WORDS - 1, -1):
+            for i in range(0, n - size + 1):
+                c = run[i:i + size]
+                txt = clean_hook(" ".join(w["w"] for w in c))
+                if not txt or not is_complete(txt) or unsafe(txt) or duplicates(txt, first):
+                    continue
+                if _tok(txt)[0] in FRAGMENT_START:
+                    continue
+                sc = (1.0 if 4 <= size <= 6 else 0.0) + (1.5 if i + size == n else 0.0) + (1.0 if i == 0 else 0.0)
+                sc += 2.0 if txt.rstrip().endswith(("?", "!")) else 0.0
+                sc += 0.5 if captions.pick_highlight([w["w"] for w in c]) else 0.0
+                sc -= 0.05 * c[0]["s"]
+                if best_sc is None or sc > best_sc + 1e-9:
+                    best, best_sc = txt, sc
+    return best
+
+
 def phrase_hook(given, words, max_start=20.0):
     """-> (text, source, matched). ONE complete phrase of 2-6 words that
     - is a whole sentence or comma clause (starts and ends on a boundary, never a cut piece),
@@ -186,7 +248,7 @@ def phrase_hook(given, words, max_start=20.0):
     The captions keep every word; the hook never takes words away from them."""
     first = first_line_text(words)
     cand = clean_hook(given)
-    if cand and is_complete(cand) and not duplicates(cand, first):
+    if cand and is_complete(cand) and not duplicates(cand, first) and not unsafe(cand):
         if overlap(cand, words, within=SPOKEN_WITHIN) >= 0.6:
             return cand, "given", True
     best, best_sc = None, None
@@ -196,7 +258,7 @@ def phrase_hook(given, words, max_start=20.0):
         for c in clauses(sent):
             c = [w for w in c if (w["e"] - w["s"]) >= MIN_WORD_S]
             txt = clean_hook(" ".join(w["w"] for w in c))
-            if not txt or not is_complete(txt) or duplicates(txt, first):
+            if not txt or not is_complete(txt) or duplicates(txt, first) or unsafe(txt):
                 continue
             # a clause that starts mid-thought (after a conjunction) is a fragment
             if _tok(txt)[0] in {"and", "but", "so", "or", "because", "then", "which", "that"} and len(c) < len(sent):
@@ -206,6 +268,9 @@ def phrase_hook(given, words, max_start=20.0):
                 best, best_sc = txt, sc
     if best:
         return best, "speech_phrase", True
-    if cand and is_complete(cand) and not duplicates(cand, first):
+    local = local_phrase(words, first, max_start)
+    if local:
+        return local, "speech_local", True
+    if cand and is_complete(cand) and not duplicates(cand, first) and not unsafe(cand):
         return cand, "given_unverified", False
     return "", "none", False

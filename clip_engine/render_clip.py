@@ -419,6 +419,12 @@ def render_frames(media, start, n, fps, bxs, src_w, src_h, enc_cmd, enc_log, cam
 
 # ---- words ---------------------------------------------------------------
 
+# Fixed ASR numerics: int8 kernels and thread counts differ between GitHub runner CPUs, so the same audio gave
+# different transcripts (and different cuts) from run to run. float32 + a fixed thread count makes it repeatable.
+ASR_COMPUTE = "float32"
+ASR_THREADS = 4
+
+
 def cpu_model():
     """CPU model string of this runner (int8 kernels can differ between runner CPUs, so a transcript is tied to it)."""
     try:
@@ -445,7 +451,7 @@ def transcribe_words(media, start, end, model_name, cache_dir, pad=2.0, beam=5, 
     a0 = max(0.0, start - pad)
     audio = transcribe.decode_pcm(media, a0, end + pad)
     path = download_model(model_name, cache_dir=cache_dir)
-    model = WhisperModel(path, device="cpu", compute_type="int8", cpu_threads=os.cpu_count() or 2)
+    model = WhisperModel(path, device="cpu", compute_type=ASR_COMPUTE, cpu_threads=ASR_THREADS)
     t = time.monotonic()
     segs, info = transcribe.transcribe_audio(model, audio, language, beam)
     sec = time.monotonic() - t
@@ -456,7 +462,7 @@ def transcribe_words(media, start, end, model_name, cache_dir, pad=2.0, beam=5, 
     meta = {"model": model_name, "beam": beam, "audio_sec": round(len(audio) / transcribe.SR, 1),
             "transcribe_sec": round(sec, 1), "n_words": len(words),
             "language_prob": round(getattr(info, "language_probability", 0.0) or 0.0, 3),
-            "cpu": cpu_model(), "threads": os.cpu_count(), "compute_type": "int8", "span": [round(a0, 3), round(end + pad, 3)],
+            "cpu": cpu_model(), "threads": ASR_THREADS, "compute_type": ASR_COMPUTE, "span": [round(a0, 3), round(end + pad, 3)],
             "words_sha": words_fingerprint(words)}
     del model
     gc.collect()
@@ -608,7 +614,7 @@ def caption_check(media, s_f, dur, cw_unmasked, src_w, src_h, avoid_px, model, c
         from faster_whisper import WhisperModel
         from faster_whisper.utils import download_model
         path = download_model(model, cache_dir=cache_dir)
-        box.append(WhisperModel(path, device="cpu", compute_type="int8", cpu_threads=os.cpu_count() or 2))
+        box.append(WhisperModel(path, device="cpu", compute_type=ASR_COMPUTE, cpu_threads=ASR_THREADS))
         return caption_sources.whisper_fn(box[0])
     try:
         return captions_pass.run(media, s_f, dur, cw_unmasked, src_w, src_h, model_fn=model_fn, avoid_px=avoid_px,

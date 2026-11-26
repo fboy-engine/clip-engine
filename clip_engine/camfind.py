@@ -342,11 +342,29 @@ def detect(gray_frames, face_fn=None, min_conf=MIN_CONFIDENCE):
     return finish(gray_frames, faces, best, vl, hl)
 
 
+def trim_cam_edges(rect, vl, w_src):
+    """Pull the right edge in to a full-height border line just inside it (a sliver of game next to the cam).
+    The detector may stop at the frame edge when that border is seen in only ~half of the frames."""
+    x0, y0, x1, y1 = rect
+    hgt = max(y1 - y0, 1.0)
+    best = None
+    for l in vl:
+        if l.get("persist", 1.0) < 0.4:
+            continue
+        near = x1 - 0.08 * w_src <= l["x"] <= x1 - 6
+        span = min(l["y1"], y1) - max(l["y0"], y0)
+        if near and span >= 0.85 * hgt and (best is None or l["x"] > best):
+            best = l["x"]
+    return (x0, y0, best, y1) if best is not None else rect
+
+
 def finish(gray_frames, faces, best, vl, hl):
     """Chat/zones/result dict around the chosen cam candidate `best` (shared by detect() and stable_overlay.detect())."""
     n = len(gray_frames)
     h_src, w_src = gray_frames[0].shape
     rect = best["rect"]
+    rect = trim_cam_edges(rect, vl, w_src)
+    best = dict(best, rect=rect)
     inside = [f for f in faces if rect[0] <= f["cx"] <= rect[2] and rect[1] <= f["cy"] <= rect[3]]
     chat = find_chat(gray_frames, rect, w_src, h_src)
     zones, warnings = {"cam": rect}, []

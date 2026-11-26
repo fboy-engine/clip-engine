@@ -5,6 +5,7 @@ afterwards (asr_fix.mask_profanity), writes out/captions_check.json (write_json)
 check['gate']['ok'] is false (coverage < 90% of the speech seconds, or a disagreement nothing settles)."""
 import json
 import os
+import re
 
 from . import caption_sources as cs
 from . import captions_verify as cv
@@ -12,6 +13,24 @@ from . import quiet_rescue as qr
 from . import speech_spans as ss
 from . import transcribe
 from . import word_retime as wr
+
+
+def drop_contradicted(words, ocr, min_p=0.45):
+    """A low-confidence ASR word that the on-screen subtitle contradicts is a hallucination: drop it
+    (it would otherwise be shown, even highlighted). Words the subtitle confirms, or that no subtitle covers, stay."""
+    def toks(t):
+        return set(re.findall(r"[a-z0-9']+", (t or "").lower()))
+    out = []
+    for w in words:
+        if (w.get("p", 1.0) or 0.0) < min_p:
+            mid = (w["s"] + w["e"]) / 2.0
+            near = [ln for ln in (ocr or []) if ln["s"] - 0.5 <= mid <= ln["e"] + 0.5]
+            if near:
+                seen = set().union(*[toks(ln["text"]) for ln in near])
+                if re.sub(r"[^a-z0-9']", "", w["w"].lower()) not in seen:
+                    continue
+        out.append(w)
+    return out
 
 
 def summary(check):
@@ -87,6 +106,7 @@ def run(media, s_f, dur, words, src_w, src_h, model_fn=None, avoid_px=None, key=
     log(f"caption speech seconds: {sinfo['counted_speech_sec']} of {sinfo['vad_speech_sec']} s VAD, "
         f"{len(sinfo['excluded'])} stretch(es) excluded ({sinfo['excluded_sec']} s)")
     final, check = cv.verify(base, gtext, ocr, spans_eff, gerr)
+    final = drop_contradicted(final, ocr)
     for w in final:
         w["e"] = min(w["e"], dur)
     raw = ss.raw_coverage(final, dur)

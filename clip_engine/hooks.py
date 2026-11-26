@@ -16,7 +16,11 @@ DANGLING = set("a an the and or but so to of in on at with for from by as if tha
 def clean_hook(text):
     t = re.sub(r"[^\w\s'!?,.\-*]", "", text or "")      # no emoji or symbols (the profanity mask * stays)
     t = re.sub(r"\s+", " ", t).strip().rstrip(".,-")
-    words = t.split()
+    words = []
+    for x in t.split():                     # ASR stutter: "okay okay" shows as one word
+        if not words or re.sub(r"\W", "", x.lower()) != re.sub(r"\W", "", words[-1].lower()):
+            words.append(x)
+    t = " ".join(words)
     if not (2 <= len(words) <= MAX_WORDS) or not re.search(r"[A-Za-z]", t):
         return ""
     return t

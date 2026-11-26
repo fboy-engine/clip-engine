@@ -72,6 +72,18 @@ Commits: d4792bb (--dense), db40ee5 + 752cfa7 (find lists dense windows), 713ecd
   - 2100+475-507, run 45692738199: no valid start (8 of 9 starts fall inside a word, 1 silent). Skip.
 - Not done: tracker work for action scenes (the caption cut did not finish with a pass), A3, A4, B2 (needs a READY clip), B5 (needs "test upload now").
 
+## LATEST FINDINGS 2026-11-26 ~08:00 Karachi (planning Claude, dispatching renders itself; all dry runs, nothing posted)
+- BEST WINDOW SO FAR: VOD section 2100-2700, render 365-419, --dense (dense_cut=true), URL variants www/m/no-www (the per-URL concurrency group keeps one run at a time per URL).
+  - Run 45737839991 (cut 389.62 +26.33 s): cam OK (0.94), overlay OK, tracking 92.5%, panel check 98.1%, captions 96% of speech PASS (window density passed), hook OK. FAILED ONLY the grade check "one caption style, max 1 highlight: 2 highlighted words in one line".
+  - THAT BUG IS FIXED in 26a9858 (captions.to_ass highlighted every occurrence of the chosen word; a repeated word such as "okay okay" gave two highlights). It now highlights only the first occurrence. CI green.
+  - The same window is NOT reproducible: run 45740701892 (same inputs, different runner CPU) cut 380.07 +27.4 s and failed the panel check at 90.7%. Run 45741832401 (exact cut 389.6-416.0, dense off): tracking 94.3%, panel 98.1%, captions 92% of speech PASS, but words cover 72% of the clip window (needs 75%): FAIL by 3 points. Same cause as the Golden nondeterminism: the ASR transcript differs by runner CPU, so the dense cut and the window density move. NEXT: pin float32 ASR (or fixed numerics) so the SAME input gives the SAME transcript, then 389.62+26.33 should reproduce and pass.
+  - Exact variants 389.6-415.0, 390.5-416.0, 391.0-416.5 all failed in the cut planner (no word-end cut point / no valid start in range). Dense on 386-420 also failed (no valid start). Use a wider window (365-419) so the planner has start choices.
+  - Dispatched 3 more dense runs on 365-419 (www / m / no-www) at ~08:10 Karachi to catch a runner whose transcript reproduces the passing cut. Read them first (list workflow runs for clip.yml, newest first).
+- 1500+74-136 dense (run 45737839875): tracking 87.3%, panel 98.0%, captions 97% of speech but words cover 52% of the window: FAIL. Speech comes in bursts; not fixable without lowering the gate.
+- 2100+26-86: no confident cam in the bench window (cam NOT confident): skip is correct.
+- Hook note: the hook for the best window was a rude line ("beer you fat dog" / "you fat dog") on some runs, and "This is art, okay?" on another. Prefer the clean one; the UNSAFE filter is in hooks.py. Consider adding insults.
+- Gemini still 403 (free tier / billing); the user has no card. Do not spend effort on it.
+
 ## TO DO (in this order)
 ### Part A (engine)
 - [x] A0 (DONE, needs USER action, see finding). Gemini: confirm the new key works inside the engine. Check which Gemini model name the engine calls (AI Studio lists models like gemini-4-hydrogen; an old name may fail) and that the secret name the workflow reads matches the secret the user set. Run ONE clip and confirm the log no longer says 403. Must never block or crash a run.

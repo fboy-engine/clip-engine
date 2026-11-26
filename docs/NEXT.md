@@ -18,7 +18,16 @@ Campaign (Reach, "$5,000 Lauren Hamden GTA 6 Clipping Campaign"): Instagram Reel
 **NO REAL UPLOAD until the user says "test upload now".** Dry-run only before that.
 After the first approved clip: remind the user to pin the campaign to a tagged engine version (e.g. lauren-v1).
 
-## STATE (rewritten 2026-11-25 ~15:10 Karachi / 10:10Z by Claude session 2)
+## STATE (rewritten 2026-11-26 ~07:00 Karachi / 02:00Z by Claude session 3)
+Part A = clip engine. Part B = campaign loop + Google Sheet + Apps Script panel.
+- **Still no clip passes every gate.** Session 3 built the dense-cut option and measured it (FINDINGS 2026-11-26). Result: the option works and keeps every gate, but the windows tried do not have 25 s of near-continuous speech that is also tracked, so nothing passed. No gate was lowered.
+- Engine now has: `--dense` / workflow input `dense_cut` (trim.valid_starts + trim.dense_cut, commit d4792bb, breath tier 713ecde), and `find` also writes `out/dense.json` + prints "DENSE WINDOWS" (db40ee5, 752cfa7). CI (unit-tests) green on each of those four commits.
+- Campaign loop stays PAUSED (campaign.json "pause": true, untouched this session). No Instagram call of any kind was made. No upload until the user says "test upload now".
+- Gemini: still 403 "free tier not available" (billing). Engine does not need it.
+- NEXT for the next Claude, in order: (1) dense windows: pass a wider render window (dense planner can only start in the first (window - 25) s, so +-3 s padding gives 3-6 s of start choices; try +-10 s) on the 2100+339-371 / 2100+378-406 / 2700+1-31 / 2700+95-125 / 3172+0-30 windows. (2) Make the dense planner rank its top-K cuts by the tracker (2100+375-409 is 98% covered words but panel 88.1%, needs 95%). (3) Check by ear/frames that 100%-VAD windows are the streamer, not cutscene or music. (4) A3, A4, B2, B4 below.
+- Everything in the older STATE (session 2) below this line is still true unless FINDINGS 2026-11-26 says otherwise.
+
+### Older STATE (session 2, 2026-11-25 ~15:10 Karachi)
 Part A = clip engine. Part B = campaign loop + Google Sheet + Apps Script panel.
 - CI (unit-tests) green on every push of this session (176d077, 99c8cc5, 5bb6122, ae6a96e, cddd9e3, 878f114).
 - **Still no clip has passed every gate.** The blockers are now known per clip (see FINDINGS). The campaign loop is PAUSED (campaign.json "pause": true, cddd9e3): it renders nothing and skips nothing until a clip passes. Set it to false to run.
@@ -49,10 +58,24 @@ Part A = clip engine. Part B = campaign loop + Google Sheet + Apps Script panel.
 - **Captions backstop**: speech_spans.MIN_RAW_COVERAGE 0.75 = words must cover 75% of the whole clip window. Clips with sparse speech (Optimistic) can never pass; choose speech-dense sources (the streamer talking most of the time). Rule left untouched.
 - **B3 already built**: campaign_lib/instagram.py uses the RESUMABLE upload (no public video URL needed), dry-run plan + "ONE:<n>" sheet switch. Untested live (as intended).
 
+## FINDINGS 2026-11-26 (Claude session 3)
+Commits: d4792bb (--dense), db40ee5 + 752cfa7 (find lists dense windows), 713ecde (0.12 s breath tier). All CI green.
+- Dense option (`--dense`, input `dense_cut`): for every start that passes pick_start's own speech-mode gates (shown strip moves, audible, speech follows, not mid-word, 25 s left) and every word-end cut point 25-30 s later, keep the pair with the highest share of the clip covered by words. Natural 0.2 s pauses first, a 0.12 s breath only if no start has a pause cut. Nothing in captions/panel/tracking gates changed (75% window, 90% speech, 95% panel, 85% tracking).
+- The three windows asked for, all with dense_cut=true, dry run:
+  - 1500+84-126, run 45687978021: 3 valid starts, no word-end cut 25-30 s later. Cause (from run 45604134279 words): speech comes in bursts with pauses of 1.8 s, 5.0 s and 4.6 s, so the densest 28 s holds about 70% words. Cannot reach 75% without lowering the gate. Skip.
+  - 366-399, run 45687977880: window is only 33 s, one valid start, no cut point. Skip (a wider window would be needed, and that window had a cam problem before).
+  - 2100+36-76, run 45687977987: dense cut 27.4 s, tracking 98.2%, panel 100%, captions 96% of speech, but only 60% of the window is words. FAIL (needs 75%). Skip.
+- find dense windows (26-30 s, VAD speech >= 85%, no pause > 2 s; 80% floor from 752cfa7): runs 45689506194 (300-900), 45689510746 (900-1500), 45689515731 (1500-2100): none. 2100-2700 (45690233828): file 378-406, 342-368, 478-504, 518-544, 553-579. 2700-3300 (45690240386): 1-31, 49-79, 95-125, 477-507, 538-568. 3172-3772 (45690244741): 0-30, 66-96. Only the VAD share is measured: not yet checked that these are the streamer and not cutscene/music.
+- Renders of dense windows:
+  - 2100+375-409, run 45690809248: dense cut 29.5 s, 98% of the clip covered by words (first clip to clear the window-coverage idea), tracking 91.5% (gate 85%), but panel check 88.1% (needs 95%), cuts at 1.5/2/2.5/3/18/19/27 s. FAIL at panel check, captions gate not reached.
+  - 2700+535-571 (45690827282, again 45692744392 after the breath tier), 3172+63-99 (45690831237, again 45693268244): no word-end cut point 25-30 s (talk with no 0.12 s gap at all, probably not normal streamer speech). Skip.
+  - 2100+475-507, run 45692738199: no valid start (8 of 9 starts fall inside a word, 1 silent). Skip.
+- Not done: tracker work for action scenes (the caption cut did not finish with a pass), A3, A4, B2 (needs a READY clip), B5 (needs "test upload now").
+
 ## TO DO (in this order)
 ### Part A (engine)
 - [x] A0 (DONE, needs USER action, see finding). Gemini: confirm the new key works inside the engine. Check which Gemini model name the engine calls (AI Studio lists models like gemini-4-hydrogen; an old name may fail) and that the secret name the workflow reads matches the secret the user set. Run ONE clip and confirm the log no longer says 403. Must never block or crash a run.
-- [~] A1 (hook fixed 176d077, nondeterminism diagnosed, panel check 5bb6122; no clip passes yet). Golden: explain the run-to-run difference (make trim/window deterministic), fix hook-empty, fix subject-in-panel to >= 95% on the post-render grade. Get ONE clip to pass ALL gates end to end. THIS IS THE GOAL.
+- [~] A1 (session 3: dense cut added d4792bb/713ecde, no pass yet, see FINDINGS 2026-11-26; hook fixed 176d077, nondeterminism diagnosed, panel check 5bb6122; no clip passes yet). Golden: explain the run-to-run difference (make trim/window deterministic), fix hook-empty, fix subject-in-panel to >= 95% on the post-render grade. Get ONE clip to pass ALL gates end to end. THIS IS THE GOAL.
 - [x] A2 (code done 5bb6122, proof pending a run). Reconcile the 85% render gate with the 95% grade check (same sampling, same box rule).
 - [ ] A3. Captions: Muddy (run 45390498494) real recovery of "nice and slow" and maybe "looks like" (user unsure) to reach ~19.0 s of 21.1 s. Optimistic captions 77%. Never fake words: add a word only when both audio passes hear it (p >= 0.5).
 - [ ] A4. Muddy second stacked cam. Slick. Sharpness gate (C). Stream rule: only GTA VI chapters of https://m.twitch.tv/videos/2934045907 plus a confident cam.
@@ -61,7 +84,7 @@ Part A = clip engine. Part B = campaign loop + Google Sheet + Apps Script panel.
 - [x] B1 (cddd9e3). Add a PAUSE switch (sheet cell or campaign.json flag) so the loop does not render or skip sources until Part A passes a clip. Failed clips must be parked as NEEDS_FIX / retried, never silently consumed as SKIPPED.
 - [ ] B2. End-to-end dry run of the panel: APPROVE -> dry-run upload -> permalink and "submit to Reach before HH:MM" -> 150-min wait -> next clip. Confirm the Apps Script panel (docs/apps_script/lauren/) is deployed with the latest code. The panel runs on Google's side under the user's account; it is NOT hit by the shared Composio quota. Only the GitHub loop's Sheet access via Composio is.
 - [x] B3 (already in instagram.py, resumable upload, no public URL). Decide and build how the video reaches Instagram. Graph API container needs a PUBLIC video URL (a GitHub Actions artifact is NOT public). Options: a public GitHub Release asset on this public repo, or resumable upload. Dry-run it.
-- [ ] B4. Finish the "Ready for first real post" checklist in docs/CAMPAIGN_HANDOFF.md.
+- [x] B4 (session 3). "Ready for first real post" checklist written in docs/CAMPAIGN_HANDOFF.md (items are unticked until a clip passes).
 - [ ] B5. Only after the user says "test upload now": one real upload, report permalink, remind about tagging lauren-v1.
 ### Later / user decisions (do not start)
 - Rewrite git history to remove a personal email from old commits (717ad3c, af9a12f, ae1f5bd, 31fecf3, b82c3a3): needs user OK, force-push.

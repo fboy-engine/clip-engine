@@ -73,3 +73,13 @@ QUEUED -> EDITING -> READY -> AWAITING_APPROVAL -> POSTING -> POSTED -> DONE.
 - DONE: d2c641a (lock, heartbeat, handoff, panel banners, safe logs), 3064af9 (idempotent poster, fake uploader), sheet cleared (item 1).
 - OPEN, in order: 2 Instagram uploader (dry-run), 3 Twitch source finder, 4 engine->panel wiring, 5 self-chaining workflow, 6 flow checks.
 - Push path: Composio GITHUB_COMMIT_MULTIPLE_FILES, account github_corral-fowler, author fboy-engine noreply.
+
+## Ready for first real post (checklist, B4; tick only with evidence, run id next to each tick)
+- [ ] 1. One clip passed EVERY gate in a dry run: window coverage >= 75%, speech coverage >= 90%, panel >= 95%, tracking >= 85%, cam in the top 28%, gameplay panel below, hook within 1 s, -14 LUFS. Run id: ____
+- [ ] 2. Face fidelity gate and sharpness gate passed on that same clip (never weakened).
+- [ ] 3. campaign.json "pause" set to false for a DRY RUN only; the dry-run loop built the Instagram container without publishing. Run id: ____
+- [ ] 4. Sheet shows the clip READY, then AWAITING_APPROVAL; the Apps Script panel (docs/apps_script/lauren/) is deployed with the latest Code.gs and shows the APPROVE button. (User checks the panel on the phone.)
+- [ ] 5. Caption has exactly #LaurenHamden and @LaurenHamden, one short English line, at most 5 more hashtags, none banned.
+- [ ] 6. Secrets read "set" by workflow mode `secrets`: IG_ACCESS_TOKEN_LAUREN, IG_USER_ID_LAUREN, COMPOSIO_API_KEY.
+- [ ] 7. The user says "test upload now". Until then NO Instagram call of any kind.
+- [ ] 8. After the real upload: report the permalink, remind the user to submit the link to Reach by hand within 30 minutes, remind about tagging lauren-v1. Never auto-submit.

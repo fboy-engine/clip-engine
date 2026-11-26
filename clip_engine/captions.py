@@ -57,8 +57,14 @@ def to_ass(words, offset=0.0, w=1080, h=1920, margin_v=420, seam=None):
     rows = []
     for line in group_words(words):
         hl = pick_highlight([x["w"] for x in line])
-        txt = " ".join((HL_ON + x["w"] + HL_OFF) if hl and x["w"] == hl else x["w"]
-                       for x in line)
+        parts, done = [], False
+        for x in line:                     # highlight ONLY the first occurrence: a repeated word is not a 2nd highlight
+            if hl and not done and x["w"] == hl:
+                parts.append(HL_ON + x["w"] + HL_OFF)
+                done = True
+            else:
+                parts.append(x["w"])
+        txt = " ".join(parts)
         s, e = line[0]["s"] - offset, line[-1]["e"] - offset
         if e > 0:
             rows.append(f"Dialogue: 0,{_t(max(s, 0))},{_t(e)},Main,{pos}{txt}")

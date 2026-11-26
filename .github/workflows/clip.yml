@@ -148,6 +148,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Add 10 GB swap (a render that runs out of RAM froze the whole runner twice; swap lets it slow down instead)
+        timeout-minutes: 3
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 10G /mnt/swapfile || sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=10240
+          sudo chmod 600 /mnt/swapfile && sudo mkswap /mnt/swapfile && sudo swapon /mnt/swapfile || echo "swap not added"
+          free -m
       - name: Cache static ffmpeg
         id: ffc
         uses: actions/cache@v4
@@ -390,7 +397,10 @@ jobs:
           [ -n "$CAM" ] && ARGS+=(--cam-corner "$CAM")
           [ -n "$CAMRECT" ] && ARGS+=(--cam-rect "$CAMRECT")
           [ -n "$PAYOFF" ] && ARGS+=(--payoff "$PAYOFF")
-          python -m clip_engine.cli render out/source.mp4 --start "$RSTART" --end "$REND" --hook "$HOOK" "${ARGS[@]}" --out out
+          mkdir -p out
+          # live log on disk + memory trace every 20 s, so a crash or freeze leaves evidence
+          ( while true; do echo "$(date +%T) $(free -m | awk '/Mem/{print "mem_used_mb="$3" avail_mb="$7}') $(free -m | awk '/Swap/{print "swap_used_mb="$3}')" >> out/mem_trace.log; sleep 20; done ) &
+          python -u -m clip_engine.cli render out/source.mp4 --start "$RSTART" --end "$REND" --hook "$HOOK" "${ARGS[@]}" --out out 2>&1 | tee out/render_step.log
       - name: Upload the clip (MP4, render/grade json, review frames)
         if: ${{ always() && inputs.render }}
         uses: actions/upload-artifact@v4
@@ -416,6 +426,8 @@ jobs:
             out/source_frame_*.jpg
             out/render_error.json
             out/encode.log
+            out/render_step.log
+            out/mem_trace.log
             out/review/*.jpg
           retention-days: 14
           if-no-files-found: warn

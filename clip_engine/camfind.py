@@ -342,7 +342,7 @@ def detect(gray_frames, face_fn=None, min_conf=MIN_CONFIDENCE):
     return finish(gray_frames, faces, best, vl, hl)
 
 
-def trim_cam_edges(rect, vl, w_src):
+def trim_cam_edges(rect, vl, w_src, gray_frames=None):
     """Pull the right edge in to a full-height border line just inside it (a sliver of game next to the cam).
     The detector may stop at the frame edge when that border is seen in only ~half of the frames."""
     x0, y0, x1, y1 = rect
@@ -355,7 +355,13 @@ def trim_cam_edges(rect, vl, w_src):
         span = min(l["y1"], y1) - max(l["y0"], y0)
         if near and span >= 0.85 * hgt and (best is None or l["x"] > best):
             best = l["x"]
-    return (x0, y0, best, y1) if best is not None else rect
+    if best is None:
+        return rect
+    if gray_frames:                          # only when what lies beyond the line is moving game picture
+        strip = [g[int(y0):int(y1), int(best) + 3:int(x1)] for g in gray_frames]
+        if not strip or strip[0].shape[1] < 8 or float(np.std(np.stack(strip).astype(np.float32), axis=0).mean()) < 4.0:
+            return rect
+    return (x0, y0, best, y1)
 
 
 def finish(gray_frames, faces, best, vl, hl):
@@ -363,7 +369,7 @@ def finish(gray_frames, faces, best, vl, hl):
     n = len(gray_frames)
     h_src, w_src = gray_frames[0].shape
     rect = best["rect"]
-    rect = trim_cam_edges(rect, vl, w_src)
+    rect = trim_cam_edges(rect, vl, w_src, gray_frames)
     best = dict(best, rect=rect)
     inside = [f for f in faces if rect[0] <= f["cx"] <= rect[2] and rect[1] <= f["cy"] <= rect[3]]
     chat = find_chat(gray_frames, rect, w_src, h_src)

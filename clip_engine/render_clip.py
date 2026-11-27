@@ -17,7 +17,7 @@ import numpy as np
 
 from . import (stagewatch, asr_fix, balance, caption_gaps, caption_lane, caption_sources, captions, captions_pass, cam_enhance, cam_layout, camfind, camresolve, cam_sr, config,
                download, exclusion, hooks, layout, panel_check, select_clean, srcinfo, subject, track, transcribe, trim, vision)
-from .cropplan import punch_curve, smooth
+from .cropplan import keep_in_frame, punch_curve, smooth
 
 OUT_W, OUT_H = config.OUT_W, config.OUT_H
 GRAY_FPS, GRAY_W, GRAY_H = 4, 64, 36
@@ -731,6 +731,7 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         reach = ((bounds[0] + m_px) / src_w, (bounds[1] + pw - m_px) / src_w, 0.98 * pw_eff / src_w)
         sub = subject.build_tracked(dets, vision.small_gray(smp["small"], 240, 135), tmasks, reach=reach)
         cxs = smooth(sub["cx"], alpha=0.4, deadband=0.03)
+        cxs = keep_in_frame(cxs, sub["box"], pw_eff, src_w)
         pts = [(round(tt, 3), round(max(bounds[0], min(c * src_w - pw / 2, bounds[1])), 1))
                for tt, c in zip(smp["times"], cxs)] or [(0.0, round((bounds[0] + bounds[1]) / 2, 1))]
         xs = per_frame_x(pts, n, fps, bounds)

@@ -28,3 +28,22 @@ def punch_curve(n, peak=PUNCH_TARGET):
     """Slow ease-in to `peak`, never above the normal 8% target."""
     peak = min(peak, PUNCH_TARGET)
     return [peak * (i / max(n - 1, 1)) ** 2 for i in range(n)]
+
+
+def keep_in_frame(cxs, boxes, crop_w, src_w, margin=0.012):
+    """Pull the smoothed crop centres so the whole subject box stays inside the crop whenever it fits.
+    Smoothing lag and the dead zone eat the slack of a wide subject (a 650 px box in an 845 px crop has ~100 px
+    each side), so the planner cut the subject at 50-75% of the samples although it was detected every time.
+    cxs: crop centres (0..1), boxes: normalised [x0, y0, x1, y1, ...] or None, crop_w: narrowest crop width in px."""
+    out, m = [], margin * crop_w
+    for c, b in zip(cxs, boxes):
+        if b is None:
+            out.append(c)
+            continue
+        x0, x1 = b[0] * src_w, b[2] * src_w
+        lo, hi = x1 - crop_w / 2.0 + m, x0 + crop_w / 2.0 - m
+        if lo > hi:                      # wider than the crop: it cannot fit, leave the centre alone
+            out.append(c)
+        else:
+            out.append(min(max(c * src_w, lo), hi) / src_w)
+    return out

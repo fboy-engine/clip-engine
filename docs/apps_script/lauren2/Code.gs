@@ -95,6 +95,18 @@ function decide(id, action) {
   });
 }
 
+var CH = 3 * 1024 * 1024;
+function clipInfo(id) { return {size: inPool_(id).getSize(), ch: CH}; }
+/** One byte range of a pool clip, base64 (the page rebuilds the video from these; no Drive iframe, no cookies). */
+function clipChunk(id, start, end) {
+  inPool_(id);
+  if (end - start >= CH) throw new Error('range too big');
+  var r = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(id) + '?alt=media', {
+    headers: {Authorization: 'Bearer ' + ScriptApp.getOAuthToken(), Range: 'bytes=' + start + '-' + end}, muteHttpExceptions: true});
+  if (r.getResponseCode() >= 300) throw new Error('read failed ' + r.getResponseCode());
+  return Utilities.base64Encode(r.getContent());
+}
+
 function dismissLink() {
   props_().deleteProperty('LAST_LINK');
   return getState();

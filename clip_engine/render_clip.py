@@ -15,7 +15,7 @@ from fractions import Fraction
 
 import numpy as np
 
-from . import (asr_fix, balance, caption_gaps, caption_lane, caption_sources, captions, captions_pass, cam_enhance, cam_layout, camfind, camresolve, cam_sr, config,
+from . import (stagewatch, asr_fix, balance, caption_gaps, caption_lane, caption_sources, captions, captions_pass, cam_enhance, cam_layout, camfind, camresolve, cam_sr, config,
                download, exclusion, hooks, layout, panel_check, select_clean, srcinfo, subject, track, transcribe, trim, vision)
 from .cropplan import punch_curve, smooth
 
@@ -48,13 +48,16 @@ def fps_arg(fps):
 
 # ---- tracking geometry ---------------------------------------------------
 
+SUBPROCESS_TIMEOUT = 300           # s: no ffmpeg call of the render may block forever (the stage watchdog is the second net)
+
+
 def gray_cmd(media, start, dur, fps=GRAY_FPS, w=GRAY_W, h=GRAY_H):
     return ["ffmpeg", "-v", "error", "-nostdin", "-ss", f"{start:.3f}", "-i", media, "-t", f"{dur:.3f}",
             "-an", "-vf", f"fps={fps},scale={w}:{h}:flags=area,format=gray", "-f", "rawvideo", "-"]
 
 
 def decode_gray(media, start, dur):
-    p = subprocess.run(gray_cmd(media, start, dur), capture_output=True)
+    p = subprocess.run(gray_cmd(media, start, dur), capture_output=True, timeout=SUBPROCESS_TIMEOUT)
     if p.returncode != 0:
         raise RuntimeError("gray decode failed: " + p.stderr.decode(errors="replace")[-300:])
     buf = np.frombuffer(p.stdout, dtype=np.uint8)
@@ -379,6 +382,8 @@ def render_frames(media, start, n, fps, bxs, src_w, src_h, enc_cmd, enc_log, cam
         last, short = None, 0
         try:
             for i in range(n):
+                if i % 300 == 0:
+                    print(f"[render] frame {i}/{n}, rss {stagewatch.rss_mb()} MB, free {stagewatch.mem_available_mb()} MB", flush=True)
                 buf = dec.stdout.read(size)
                 if len(buf) == size:
                     last = np.frombuffer(buf, np.uint8).reshape(src_h, src_w, 3)
@@ -408,10 +413,19 @@ def render_frames(media, start, n, fps, bxs, src_w, src_h, enc_cmd, enc_log, cam
         finally:
             enc.stdin.close()
             dec.stdout.close()
-            dec.wait()
+            try:
+                dec.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                dec.kill()
+                dec.wait()
             if cam_stream is not None:
                 cam_stream.close()
-            rc = enc.wait()
+            try:
+                rc = enc.wait(timeout=300)
+            except subprocess.TimeoutExpired:
+                enc.kill()
+                enc.wait()
+                rc = -9
     if rc != 0:
         raise RuntimeError("encoder failed: " + open(enc_log).read()[-500:])
     return short
@@ -464,15 +478,15 @@ def transcribe_words(media, start, end, model_name, cache_dir, pad=2.0, beam=5, 
             "language_prob": round(getattr(info, "language_probability", 0.0) or 0.0, 3),
             "cpu": cpu_model(), "threads": ASR_THREADS, "compute_type": ASR_COMPUTE, "span": [round(a0, 3), round(end + pad, 3)],
             "words_sha": words_fingerprint(words)}
-    del model
-    gc.collect()
+    del model, segs, info, audio
+    meta["rss_after_release_mb"] = stagewatch.release_memory()       # glibc keeps freed pages: hand them back before the next model
     return words, meta
 
 
 def decode_gray_at(media, start, dur, fps, w=96, h=54):
     cmd = ["ffmpeg", "-v", "error", "-nostdin", "-ss", f"{start:.3f}", "-i", media, "-t", f"{dur:.3f}", "-an",
            "-vf", f"fps={fps},scale={w}:{h}:flags=area,format=gray", "-f", "rawvideo", "-"]
-    p = subprocess.run(cmd, capture_output=True)
+    p = subprocess.run(cmd, capture_output=True, timeout=SUBPROCESS_TIMEOUT)
     if p.returncode != 0:
         raise RuntimeError("gray decode failed: " + p.stderr.decode(errors="replace")[-300:])
     buf = np.frombuffer(p.stdout, dtype=np.uint8)
@@ -621,13 +635,15 @@ def caption_check(media, s_f, dur, cw_unmasked, src_w, src_h, avoid_px, model, c
                                  key=os.environ.get("GEMINI_API_KEY"), log=log)
     finally:
         box.clear()
-        gc.collect()
+        stagewatch.release_memory()
 
 
 def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=None, words=None,
            model="large-v3", cache_dir=None, preset=config.PRESET, log=print, payoff="", vod_id="", dense=False):
     """Returns the render.json dict (also written to out_dir). Raises on anything it cannot do honestly."""
     os.makedirs(out_dir, exist_ok=True)
+    stagewatch.start(out_dir)
+    stagewatch.begin("cam_resolve", 300)
     t0 = time.monotonic()
     pr = download.probe_media(media)
     src_w, src_h, fps = pr["width"], pr["height"], pr["fps"]
@@ -646,8 +662,10 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
     if generic:
         cam_rect, zones = gen["cam_rect"], gen["zones"]
         log("overlay zones found in the picture: " + ", ".join(sorted(zones)))
+    stagewatch.begin("cam_diag", 300)
     # cam diagnostics FIRST, on the whole moment, written even when the render fails later
     diag = write_cam_diag(media, start, min(end, pr["duration"] - 0.05), src_w, src_h, out_dir, cam_rect, log)
+    stagewatch.begin("asr", 480)
     meta = None
     if words is None:
         words, meta = transcribe_words(media, start, end, model, cache_dir)
@@ -655,6 +673,7 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         log(f"asr fingerprint: {meta['n_words']} words, sha {meta['words_sha']}, span {meta['span']}, cpu {meta['cpu']}, "
             f"{meta['threads']} threads, {meta['compute_type']}")
     words = asr_fix.fix_words(words, GLOSSARY)
+    stagewatch.begin("plan_and_track", 600)
     shift, open_notes = 0.0, []
     for attempt in range(OPEN_TRIES):
         notes.clear()                       # each attempt re-plans, so its notes start fresh
@@ -791,6 +810,7 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
 
     # captions: second sources + rescue pass on the FINAL cut; the ASS is rebuilt from the verified words
     t = time.monotonic()
+    stagewatch.begin("captions_check", 600)
     avoid = [tuple(z) for z in zones.values()] + ([tuple(cam_region)] if use_cam else [])
     cw_u = [w for w in asr_fix.to_clip_time(words, s_f) if w["s"] < dur]
     for w in cw_u:
@@ -810,14 +830,17 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
     log(f"captions verified: {len(cw)} words ({cap_check['counts']['corrected']} corrected, "
         f"{cap_check['counts']['inserted']} inserted), hook {hook!r}")
 
+    stagewatch.begin("loudnorm", 180)
     # audio: measure, then normalise to -14 LUFS (stream audio only)
     t = time.monotonic()
-    p = subprocess.run(loudnorm_measure_cmd(media, s_f, dur, END_FADE), capture_output=True, text=True)
+    p = subprocess.run(loudnorm_measure_cmd(media, s_f, dur, END_FADE), capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT)
     ln = parse_loudnorm(p.stderr)
     af = loudnorm_filter(dur, ln, END_FADE)
     log(f"audio: input {ln['input_i']:.1f} LUFS, tp {ln['input_tp']:.1f} dBFS -> target {config.TARGET_LUFS:g}")
     timings["loudnorm_sec"] = round(time.monotonic() - t, 1)
 
+    stagewatch.begin("cam_prep", 420)
+    stagewatch.release_memory()
     cam_stream, cam_prep, probe = None, None, None
     if use_cam:                         # B3: the cam block comes from the benchmark's chain (never plain lanczos)
         t = time.monotonic()
@@ -833,6 +856,7 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
                                                    (src_w, src_h), b3, up, log)
         probe = cam_enhance.new_probe(n)
         timings["cam_prep_sec"] = round(time.monotonic() - t, 1)
+    stagewatch.begin("encode_cam_sr", 1200)
     t = time.monotonic()
     out_path = os.path.join(out_dir, "clip.mp4")
     short = render_frames(media, s_f, n, fps, bxs, src_w, src_h,
@@ -840,6 +864,7 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
                           os.path.join(out_dir, "encode.log"), cbx,
                           tuple(cam_region) if use_cam else None, cam_stream, probe)
     timings["render_sec"] = round(time.monotonic() - t, 1)
+    stagewatch.begin("final_checks", 420)
     audio_final = final_true_peak(media, s_f, dur, out_path, ln, log)
     if not audio_final["ok"]:
         raise ValueError(f"true peak {audio_final['tp']} dBFS is above {config.TRUE_PEAK:g} after "
@@ -888,6 +913,8 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
          "grade_inputs": {"captions_check": captions_pass.summary(cap_check), "cam_diag": diag, "audio_inputs": 1, "audio_filters": list(AUDIO_FILTERS), "trim": trim_info,
                           "hook": {"text": hook, "source": hook_src, "match": hook_match}, "cam_quality": cam_quality,
                           "rendered_gate": rgate, **stats}}
+    stagewatch.close("ok")
+    r["stages"] = stagewatch.stages()
     with open(os.path.join(out_dir, "render.json"), "w") as f:
         json.dump(r, f, indent=1)
     lj = layout.layout_report(src_w, src_h, rect, cam_info, bxs, stats.get("exclusion"))

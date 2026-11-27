@@ -17,6 +17,9 @@ SCALE = 3
 ROI_MARGIN = 6                  # px of source around the 360x180 box that the upscaler also sees (sub-pixel crop)
 CAM_FPS_TIERS = (30, 24)        # cam is processed at this rate; each processed frame is reused for the frames between
 SR_BUDGET_SEC = 720             # share of the 35-minute render step the upscaler may use (whisper, tracking, encode need the rest)
+SR_HARD_LIMIT_SEC = 900           # real SR seconds a clip may use; past it the rest of the cam block falls back to lanczos (clip then fails its own gate)
+MAX_SR_PIXELS = 400_000         # input pixels per model call (a normal 534x282 ROI is 150k: one call); bigger ROIs are tiled
+SR_TILE, SR_OVERLAP = 320, 16   # tile edge and overlap in input px (the 16-layer 3x3 net sees +-16 px)
 SAFETY = 1.25                   # measured time per frame is multiplied by this before it is compared with the budget
 MAX_CLIP_SEC = 45.0
 DENOISE_VF = "hqdn3d=1.2:1.0:3.0:2.5"                     # light spatial + temporal denoise (luma/chroma spatial, luma/chroma temporal)
@@ -150,7 +153,12 @@ class OnnxSR:
         return self
 
     def run4(self, img):
-        """The raw model output: exactly 4x, BGR uint8."""
+        """The raw model output: exactly 4x, BGR uint8. A huge ROI is run in tiles so memory stays bounded."""
+        if img.shape[0] * img.shape[1] > MAX_SR_PIXELS:
+            return tiled_run4(self._run4_whole, img)
+        return self._run4_whole(img)
+
+    def _run4_whole(self, img):
         rgb = np.ascontiguousarray(img[..., ::-1]).astype(np.float32) / 255.0
         y = self.sess.run(None, {self.inp: rgb.transpose(2, 0, 1)[None]})[0][0]
         return np.ascontiguousarray((np.clip(y, 0, 1).transpose(1, 2, 0) * 255.0 + 0.5).astype(np.uint8)[..., ::-1])
@@ -160,6 +168,21 @@ class OnnxSR:
         out = self.run4(img)
         h, w = img.shape[:2]
         return cv2.resize(out, (w * SCALE, h * SCALE), interpolation=cv2.INTER_AREA)   # 4x -> 3x
+
+
+def tiled_run4(fn, img, tile=SR_TILE, ov=SR_OVERLAP):
+    """fn(img) -> 4x picture, applied tile by tile with `ov` px of context on each side that is cropped away again."""
+    h, w = img.shape[:2]
+    out = np.zeros((h * 4, w * 4, 3), np.uint8)
+    for y0 in range(0, h, tile):
+        y1 = min(h, y0 + tile)
+        ya, yb = max(0, y0 - ov), min(h, y1 + ov)
+        for x0 in range(0, w, tile):
+            x1 = min(w, x0 + tile)
+            xa, xb = max(0, x0 - ov), min(w, x1 + ov)
+            o = fn(np.ascontiguousarray(img[ya:yb, xa:xb]))
+            out[y0 * 4:y1 * 4, x0 * 4:x1 * 4] = o[(y0 - ya) * 4:(y1 - ya) * 4, (x0 - xa) * 4:(x1 - xa) * 4]
+    return out
 
 
 def make(name):
@@ -396,6 +419,10 @@ def quality_verdict(cq):
     function for the render (refuses the clip) and the grader (fails the check)."""
     g = gate_numbers(cq["enhanced"], cq["lanczos"])
     reasons = list(g["reasons"])
+    if cq.get("sr_fallback"):
+        fb = cq["sr_fallback"]
+        reasons.append(f"cam SR ran over its time budget ({fb.get('sr_seconds')} s > {fb.get('limit')} s) and the cam block fell back "
+                       f"to plain lanczos from frame {fb.get('at_frame')}: plain lanczos is not shipped")
     gh = cq.get("ghost")
     if gh is not None and not gh.get("ok", False):
         reasons.append(f"double edges (ghosting) in the in-between frames: {gh.get('detail', 'no detail')}")

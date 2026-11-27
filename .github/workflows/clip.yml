@@ -397,6 +397,7 @@ jobs:
           [ -n "$CAM" ] && ARGS+=(--cam-corner "$CAM")
           [ -n "$CAMRECT" ] && ARGS+=(--cam-rect "$CAMRECT")
           [ -n "$PAYOFF" ] && ARGS+=(--payoff "$PAYOFF")
+          set -o pipefail                 # without it the pipe to tee hides a failed render (the step would end green)
           mkdir -p out
           # live log on disk + memory trace every 20 s, so a crash or freeze leaves evidence
           ( while true; do echo "$(date +%T) $(free -m | awk '/Mem/{print "mem_used_mb="$3" avail_mb="$7}') $(free -m | awk '/Swap/{print "swap_used_mb="$3}')" >> out/mem_trace.log; sleep 20; done ) &
@@ -427,6 +428,7 @@ jobs:
             out/render_error.json
             out/encode.log
             out/render_step.log
+            out/render_stages.json
             out/mem_trace.log
             out/review/*.jpg
           retention-days: 14

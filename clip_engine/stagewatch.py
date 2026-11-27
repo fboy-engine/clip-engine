@@ -16,8 +16,8 @@ import threading
 import time
 
 TOTAL_BUDGET_SEC = 31 * 60        # under the 35 min step timeout of clip.yml, which is under the 50 min job limit
-MIN_AVAIL_MB = 600                # MemAvailable below this for STRIKES polls in a row = stop before the runner freezes
-STRIKES = 3
+MIN_AVAIL_MB = 500                # MemAvailable below this for STRIKES polls in a row = stop before the runner freezes
+STRIKES = 5                       # (clip.yml has 10 GB swap now: only a sustained shortage counts, not a dip)
 POLL_SEC = 1.0
 EXIT_TIMEOUT, EXIT_MEMORY = 124, 125
 

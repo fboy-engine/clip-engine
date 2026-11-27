@@ -174,6 +174,11 @@ def cmd_render(a):
     except Exception as e:  # report the real failure, never fake a pass
         msg = f"FAIL render: {type(e).__name__}: {str(e)[:900]}"
         print(msg)
+        try:
+            from . import stagewatch
+            stagewatch.close("error: " + msg[:200])
+        except Exception:
+            pass
         lines = [msg]
         try:    # cam diagnostics were written before the gates ran: report them even though no clip exists
             os.makedirs(a.out, exist_ok=True)

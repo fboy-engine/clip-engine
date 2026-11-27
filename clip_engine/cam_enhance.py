@@ -157,8 +157,11 @@ class CamStream:
     plan = {"cam_fps", "blend", "deblock_vf", "interp": "flow"|"nearest"}. `block(i, full_frame)` must be called with
     i = 0, 1, 2, ... (the render loop does). The prepass ffmpeg is started lazily and killed by close()."""
 
-    def __init__(self, media, start, dur, fps, boxes, roi, plan, up, fps_arg, log=print, spawn=subprocess.Popen):
+    def __init__(self, media, start, dur, fps, boxes, roi, plan, up, fps_arg, log=print, spawn=subprocess.Popen,
+                 sr_limit=None):
         self.media, self.start, self.dur, self.fps = media, start, dur, fps
+        self.sr_limit = cam_sr.SR_HARD_LIMIT_SEC if sr_limit is None else sr_limit
+        self.fallback = None
         self.boxes, self.roi, self.plan, self.up = boxes, tuple(roi), plan, up
         self.cam_fps, self.blend = plan["cam_fps"], plan["blend"]
         self.interp = plan.get("interp", "flow")
@@ -209,6 +212,12 @@ class CamStream:
             return
         self._read_to(k)
         t = time.perf_counter()
+        if self.fallback is None and self.sr_sec > self.sr_limit:
+            self.fallback = {"at_frame": k, "sr_seconds": round(self.sr_sec, 1), "limit": self.sr_limit}
+            self.log(f"WARNING cam SR used {self.sr_sec:.0f} s (limit {self.sr_limit} s): plain lanczos cam from frame {k}; the clip will fail its quality gate")
+        if self.fallback is not None:           # bounded time: no more SR, the lanczos block is what the gate then judges
+            self.mixed[k], self.lan4[k], _ = sr_mix(cam_sr.Lanczos(), self.clean[k], self.blend)
+            return
         self.mixed[k], self.lan4[k], _ = sr_mix(self.up, self.clean[k], self.blend)
         self.sr_sec += time.perf_counter() - t
         self.sr_frames += 1
@@ -290,7 +299,8 @@ class CamStream:
         return {"cam_fps": self.cam_fps, "blend": self.blend, "interp": self.interp, "roi": list(self.roi),
                 "deblock_vf": self.plan.get("deblock_vf", ""), "sr_frames": self.sr_frames,
                 "sr_seconds": round(self.sr_sec, 1), "flow_seconds": round(self.flow_sec, 1),
-                "sec_per_sr_frame": round(self.sr_sec / max(1, self.sr_frames), 3)}
+                "sec_per_sr_frame": round(self.sr_sec / max(1, self.sr_frames), 3),
+                "fallback": self.fallback}
 
     def close(self):
         if self.proc is not None:
@@ -482,7 +492,7 @@ def quality_report(stream, info, probe):
             "sr_seconds": s["sr_seconds"], "flow_seconds": s["flow_seconds"], "sec_per_sr_frame": s["sec_per_sr_frame"],
             "enhanced": enh, "lanczos": old, "fidelity": enh["fidelity"], "blockiness": enh["blockiness"], "edge": enh["edge"],
             "ghost": info.get("ghost"), "ghost_ok": bool((info.get("ghost") or {}).get("ok")),
-            "flow_failed": info.get("flow_failed"), "gate": gate, "probe_frames": len(probe["rows"])}
+            "flow_failed": info.get("flow_failed"), "sr_fallback": s.get("fallback"), "gate": gate, "probe_frames": len(probe["rows"])}
 
 
 def label(img, text):

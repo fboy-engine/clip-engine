@@ -27,6 +27,7 @@ MOTION_FPS = 20
 PICK_FPS = 10         # start picking samples the shown strip at the grade's rate
 DARK_LUMA = 50.0   # mean luma (0-255) of a sampled frame below which an undetected subject is not held against the clip
 TRACK_GATE_PCT = 85.0  # sampled frames with the subject fully inside the gameplay crop; below it the render refuses the clip
+START_RETRIES = 3     # dense mode: when the tracking or panel check fails, retry the cut on the next-best start (at most this many times)
 OPEN_TRIES = 3        # re-plan the cut at most this many times when the shown opening is frozen
 NOMINAL_CAM = layout.NOMINAL_CAM
 GLOSSARY = {"lucia": "Lucia"}
@@ -495,7 +496,18 @@ def decode_gray_at(media, start, dur, fps, w=96, h=54):
     return buf[:n * w * h].reshape(n, h, w)
 
 
-def plan_cut(media, pr, start, end, words, cam_corner, cam_rect, payoff, notes, log, zones=None, dense=False):
+class RetryStart(ValueError):
+    """Raised by the tracking / panel checks in dense mode: this cut start failed, try another one."""
+    def __init__(self, msg, cut_start):
+        super().__init__(msg)
+        self.cut_start = cut_start
+
+
+def _retry_or_fail(dense, bad_starts, cut_start, msg):
+    return RetryStart(msg, cut_start) if dense and len(bad_starts) < START_RETRIES else ValueError(msg)
+
+
+def plan_cut(media, pr, start, end, words, cam_corner, cam_rect, payoff, notes, log, zones=None, dense=False, bad_starts=()):
     """Cut points: first real motion (with sound) at/after `start`; a payoff end at/before `end`.
     Returns (in_s, out_s, trim_info). Raises when the moment has no honest start or end."""
     src_w, src_h = pr["width"], pr["height"]
@@ -526,6 +538,10 @@ def plan_cut(media, pr, start, end, words, cam_corner, cam_rect, payoff, notes, 
         if not starts:
             raise ValueError(f"dense cut: no start in {start:g}-{env_end:g}s where the shown strip moves and speech follows "
                              f"with {config.MIN_LEN:g} s left: skip this moment ({sinfo})")
+        if bad_starts:                # a start whose tracking / panel check failed is not tried again
+            starts = [s for s in starts if all(abs(start + s - b) > 2.0 for b in bad_starts)]
+            if not starts:
+                raise ValueError("dense cut: no other valid start left after the tracking retries: skip this moment")
         r0, r1, dinfo = trim.dense_cut(rel, starts, span, min_len=config.MIN_LEN, max_len=trim.DENSE_MAX)
         if payoff:
             notes.append("payoff phrase ignored in dense mode")
@@ -639,8 +655,21 @@ def caption_check(media, s_f, dur, cw_unmasked, src_w, src_h, avoid_px, model, c
         stagewatch.release_memory()
 
 
-def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=None, words=None,
-           model="large-v3", cache_dir=None, preset=config.PRESET, log=print, payoff="", vod_id="", dense=False):
+def render(*args, **kw):
+    """Dense mode: when a cut start fails the tracking or panel check, retry on the next-best start (same checks, same
+    thresholds). Every other failure, and the last retry, raises as before."""
+    log, bad = kw.get("log", print), []
+    for _ in range(START_RETRIES + 1):
+        try:
+            return _render(*args, bad_starts=tuple(bad), **kw)
+        except RetryStart as e:
+            bad.append(e.cut_start)
+            log(f"retry: cut start {e.cut_start:.2f}s failed ({str(e)[:140]}); trying the next-best start ({len(bad)}/{START_RETRIES})")
+    raise ValueError("unreachable")
+
+
+def _render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=None, words=None,
+            model="large-v3", cache_dir=None, preset=config.PRESET, log=print, payoff="", vod_id="", dense=False, bad_starts=()):
     """Returns the render.json dict (also written to out_dir). Raises on anything it cannot do honestly."""
     os.makedirs(out_dir, exist_ok=True)
     stagewatch.start(out_dir)
@@ -678,7 +707,8 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
     shift, open_notes = 0.0, []
     for attempt in range(OPEN_TRIES):
         notes.clear()                       # each attempt re-plans, so its notes start fresh
-        s_c, e_c, trim_info = plan_cut(media, pr, start + shift, end, words, cam_corner, cam_rect, payoff, notes, log, zones, dense=dense)
+        s_c, e_c, trim_info = plan_cut(media, pr, start + shift, end, words, cam_corner, cam_rect, payoff, notes, log, zones, dense=dense,
+                                       bad_starts=bad_starts)
         s_f, n, dur = frame_window(s_c, e_c, fps)
         if not (config.MIN_LEN <= dur <= config.MAX_LEN):
             raise ValueError(f"clip would be {dur:.1f} s, outside {config.MIN_LEN:g}-{config.MAX_LEN:g} s")
@@ -772,7 +802,7 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         log(f"tracking: subject inside the panel in {sub_plan['in_panel_pct']}% of {sub_plan['samples']} sampled frames "
             f"(gate {TRACK_GATE_PCT:g}%); sources {trk['sources_pct']}; static detections dropped: {len(trk['static_dropped'])}")
         if sub_plan["in_panel_pct"] < TRACK_GATE_PCT:
-            raise ValueError(f"tracking gate failed: subject inside the panel in {sub_plan['in_panel_pct']}% of sampled frames "
+            raise _retry_or_fail(dense, bad_starts, s_c, f"tracking gate failed: subject inside the panel in {sub_plan['in_panel_pct']}% of sampled frames "
                              f"(needs >= {TRACK_GATE_PCT:g}%); sources {trk['sources_pct']}; cut at {sub_plan['cut_times'][:12]} "
                              f"(out/tracking.json has every sample)")
 
@@ -784,7 +814,7 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         with open(os.path.join(out_dir, "tracking.json"), "w") as f:
             json.dump(trk, f, indent=1)
         if not pc["ok"]:
-            raise ValueError("panel check failed (the grade's own measurement, so this clip would fail the grade): " + pc["detail"]
+            raise _retry_or_fail(dense, bad_starts, s_c, "panel check failed (the grade's own measurement, so this clip would fail the grade): " + pc["detail"]
                              + " (out/tracking.json has the numbers; the render-time tracker said "
                              + f"{sub_plan['in_panel_pct']}%)")
 

@@ -127,6 +127,32 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 -m clip_engine.batch summary
+      - name: Move passing clips to the pool (GitHub release "pool", copied into Drive by the review page)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, glob, os, subprocess, datetime
+          d = json.load(open("batch_out/results.json"))
+          rows = d if isinstance(d, list) else next((v for v in d.values() if isinstance(v, list)), [])
+          subprocess.run("gh release view pool >/dev/null 2>&1 || gh release create pool --title pool --notes 'clip pool' --prerelease", shell=True)
+          for r in rows:
+              if r.get("result") != "PASS" or not r.get("artifact"):
+                  continue
+              fs = sorted(glob.glob("arts/%s/**/*.mp4" % r["artifact"], recursive=True), key=os.path.getsize)
+              if not fs:
+                  print("no mp4 for", r["artifact"]); continue
+              name = "%s.mp4" % r["artifact"]
+              os.replace(fs[-1], name)
+              subprocess.run(["gh", "release", "upload", "pool", name, "--clobber"], check=False)
+              print("pooled", name)
+          out = subprocess.run("gh api repos/${GITHUB_REPOSITORY}/releases/tags/pool --jq '.assets[] | [.id,.created_at] | @tsv'", shell=True, capture_output=True, text=True).stdout
+          cut = datetime.datetime.utcnow() - datetime.timedelta(days=3)
+          for line in out.splitlines():
+              i, t = line.split("\t")
+              if datetime.datetime.strptime(t, "%Y-%m-%dT%H:%M:%SZ") < cut:
+                  subprocess.run("gh api -X DELETE repos/${GITHUB_REPOSITORY}/releases/assets/%s" % i, shell=True)
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: batch-results

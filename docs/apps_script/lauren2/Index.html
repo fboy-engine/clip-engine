@@ -19,24 +19,31 @@ button.arm{outline:3px solid #fff}
 .msg{color:var(--mut);text-align:center;margin:30px 0;font-size:18px}.err{color:var(--r);text-align:center;margin-top:10px}
 </style></head><body><h1>Clips</h1><div id="app"></div><div id="err" class="err"></div>
 <script>
-var app=document.getElementById('app'),errEl=document.getElementById('err'),sig='',armed=null,armT=null,busy=false,timer=null;
+var app=document.getElementById('app'),errEl=document.getElementById('err'),sig='',armed=null,armT=null,busy=false,timer=null,tick=null,skew=0,cur=null;
 function run(fn,a,cb){google.script.run.withSuccessHandler(cb).withFailureHandler(function(e){errEl.textContent='Offline, retrying';busy=false;clearTimeout(timer);timer=setTimeout(poll,10000)})[fn].apply(null,a||[])}
 function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
+function fmt(ms){var s=Math.max(0,Math.ceil(ms/1000)),h=Math.floor(s/3600),m=Math.floor(s%3600/60),r=s%60;return h+':'+(m<10?'0':'')+m+':'+(r<10?'0':'')+r}
 function render(s,force){
-  errEl.textContent='';
-  var k=s.phase+'|'+(s.link||'')+'|'+s.clips.map(function(c){return c.id+c.held}).join(',');
-  if(k===sig&&!force)return;sig=k;app.textContent='';
+  errEl.textContent='';cur=s;skew=s.now-Date.now();clearInterval(tick);
+  var k=s.phase+'|'+(s.link||'')+'|'+(s.open?1:0)+'|'+s.clips.map(function(c){return c.id}).join(',');
+  if(k===sig&&!force&&s.phase!=='idle')return;sig=k;app.textContent='';
   if(s.phase==='waiting'){app.appendChild(el('div','msg','Wait for the link...'));return}
   if(s.phase==='link'){app.appendChild(el('div','msg','Posted'));
     var cp=el('button','ok big','Copy link');cp.onclick=function(){copy(s.link,cp)};app.appendChild(cp);
     var dn=el('button','keep big','Done');dn.onclick=function(){run('dismissLink',[],function(n){render(n,true)})};app.appendChild(dn);return}
-  if(!s.clips.length){app.appendChild(el('div','msg','No clips waiting'));return}
+  if(s.phase==='idle'){
+    var m=el('div','msg','');app.appendChild(m);
+    var upd=function(){var left=s.unlock-(Date.now()+skew);
+      if(left>0){m.textContent='Next round in '+fmt(left)}
+      else{m.textContent='No clips waiting';clearInterval(tick);poll()}};
+    upd();tick=setInterval(upd,1000);
+    if(s.saved)app.appendChild(el('div','msg',s.saved+' saved for the next round'));return}
   s.clips.forEach(function(c){
-    var card=el('div','card'),n=el('div','name');n.appendChild(el('span',null,c.name));if(c.held)n.appendChild(el('span','tag','saved'));card.appendChild(n);
+    var card=el('div','card'),n=el('div','name');n.appendChild(el('span',null,c.name));card.appendChild(n);
     var v=el('div','vid');loadVideo(c.id,v);card.appendChild(v);
     var r=el('div','row');
-    r.appendChild(btn('Approve','ok',c,'approve','Tap again to approve'));
-    if(!c.held)r.appendChild(btn('Keep','keep',c,'keep'));
+    if(s.open)r.appendChild(btn('Approve','ok',c,'approve','Tap again to approve'));
+    r.appendChild(btn('Keep','keep',c,'keep'));
     r.appendChild(btn('Delete','del',c,'delete','Tap again to delete'));
     card.appendChild(r);app.appendChild(card)})
 }
@@ -56,9 +63,10 @@ function btn(t,cls,c,act,confirmText){var b=el('button',cls,t);b.onclick=functio
   if(busy)return;var key=c.id+act;
   if(confirmText&&armed!==key){armed=key;b.textContent=confirmText;b.className=cls+' arm';clearTimeout(armT);armT=setTimeout(function(){armed=null;b.textContent=t;b.className=cls},3000);return}
   armed=null;busy=true;run('decide',[c.id,act],function(r){busy=false;if(!r.ok)errEl.textContent=r.message;render(r.state,true);poll()})};return b}
-function copy(t,b){var done=function(){b.textContent='Copied'};
+function copy(t,b){var done=function(){b.textContent='Copied';setTimeout(function(){run('dismissLink',[],function(n){render(n,true)})},8000)};
   try{navigator.clipboard.writeText(t).then(done,fb)}catch(e){fb()}
   function fb(){var a=document.createElement('textarea');a.value=t;document.body.appendChild(a);a.select();try{document.execCommand('copy');done()}catch(e){}a.remove()}}
 function poll(){clearTimeout(timer);run('getState',[],function(s){render(s);timer=setTimeout(poll,s.phase==='waiting'?6000:60000)})}
-poll();
+function sync(){run('syncPool',[],function(r){if(r&&r.added)poll()});setTimeout(sync,300000)}
+poll();sync();
 </script></body></html>

@@ -3,6 +3,14 @@
 Repo: fboy-engine/clip-engine, branch main. Last updated: 2026-11-25 ~18:00 Karachi (12:40Z) by Claude session 4.
 Every Claude: read this whole file, do the next undone item, tick it, commit after EVERY change (small commits, CI must stay green), and keep this file true. Trust `git log` over HANDOFF.md (stale). Other docs: docs/CAMPAIGN_HANDOFF.md (Part B).
 
+## BATCH (2026-11-27 ~12:05 Karachi, Claude Sonnet 5.5) - READ THE RESULTS, DO NOT RE-DISPATCH BLINDLY
+- Built (1659d19, unit-tests green run 45955447463): `.github/workflows/batch.yml` + `clip_engine/batch.py` + `tests/test_batch.py`; clip.yml is now also callable (`workflow_call`, extra input `tag`; manual runs unchanged); `find` writes an empty candidates.json when there is nothing to rank.
+- What it does: find on 8 stream sections and 8 short clips -> every stream candidate padded 14 s (min 54 s window), dense; each clip's top window plain AND dense; plus the regression window (2100-2700, render 365-419, dense), which must pass. Max 6 at once. A rejection never stops the others. No gate changed.
+- Started ONCE: run 45955738406 (https://github.com/fboy-engine/clip-engine/actions/runs/45955738406). Checked once: prepare passed, plan (find) jobs in progress. Not watched after that; expect hours.
+- Read results: `docs/BATCH_RESULTS.md` (written on main by the run's last job) or the artifact `batch-results` (results.json + RESULTS.md, 30 days). PASS / FAIL (exact gate line) / SKIP (find found nothing) / CRASH / TIMEOUT, counts by gate. Passing clips: artifact `clip-45955738406-<job>` (clip.mp4, 14 days). `batch-plan` lists every window.
+- If BATCH_RESULTS.md is missing after the run ends, open the run's `summary` job.
+- NOTHING IS UPLOADED: dry run only (dry_run offers no "false"). Campaign stays PAUSED (campaign.json "pause": true). No Instagram or Reach call.
+
 ## The user
 - Android phone only. No PC, no paid hosting. In a hurry, wants it working TODAY. Usage limits are tight: small steps, commit often, never leave work uncommitted.
 - Do not ask whether to continue. Decide, do, report. Ask only for things only they can do (accounts, tokens, link submissions).

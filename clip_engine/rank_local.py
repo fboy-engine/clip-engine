@@ -6,6 +6,10 @@ from .config import MIN_LEN, MAX_LEN
 
 REACTION = re.compile(r"\b(no way|oh my god|omg|what the|holy|insane|crazy|bro|dude|"
                       r"let'?s go|wait|are you serious|unbelievable|finally)\b", re.I)
+# engagement extras (score only, never the gate): hard reactions, laughter, disbelief, shouting
+HARD = re.compile(r"\b(bruh|yo+|nah|what the (hell|fuck)|are you (kidding|joking)|i can'?t|stop it|"
+                  r"shut up|you did not|did (he|she|that) just|oh no|hell no|get out|lmao|dead)\b", re.I)
+LAUGH = re.compile(r"\b(ha(ha)+|haha|hehe|lol)\b", re.I)
 
 
 @dataclass
@@ -53,6 +57,10 @@ def score(w):
     s += min(max(w.peak_rms_db - w.mean_rms_db, 0), 12) / 12 * 3.0
     s += 1.5 if REACTION.search(w.text) else 0
     s += min(max(w.motion_lift, 0), 4) / 4 * 2.0
+    s += 1.0 if HARD.search(w.text) else 0
+    s += 0.7 if LAUGH.search(w.text) else 0
+    s += min(w.text.count("!") + w.text.count("?"), 4) / 4 * 0.8       # exclaiming / asking = reacting
+    s += 0.8 if (w.peak_rms_db - w.mean_rms_db) >= 9 else 0            # a real shout or burst
     s -= abs(dur - 35) / 35          # prefer ~35 s
     return s
 

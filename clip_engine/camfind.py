@@ -364,12 +364,38 @@ def trim_cam_edges(rect, vl, w_src, gray_frames=None):
     return (x0, y0, best, y1)
 
 
+def trim_cam_seam(rect, gray_frames, tail=0.14):
+    """Cut the cam at a static vertical seam inside its right edge (game picture or a dark/green strip beside the cam).
+    A seam is a column where, in >= 80% of rows, the same step (>= 10 grey levels) shows in the time average.
+    Colour-blind on purpose: uses grey steps, not hue."""
+    if not gray_frames:
+        return rect
+    x0, y0, x1, y1 = [int(round(v)) for v in rect]
+    if x1 - x0 < 80 or y1 - y0 < 40:
+        return rect
+    h_src, w_src = gray_frames[0].shape
+    x1, y1 = min(x1, w_src), min(y1, h_src)
+    lo = max(x0 + 40, int(x1 - tail * (x1 - x0)))
+    if x1 - lo < 12:
+        return rect
+    reg = np.stack([g[y0:y1, lo:x1].astype(np.float32) for g in gray_frames]).mean(axis=0)
+    d = np.abs(reg[:, 1:] - reg[:, :-1])                      # rows x (cols-1), step of the time average
+    frac = (d >= 10.0).mean(axis=0)
+    ok = np.where(frac >= 0.8)[0]
+    ok = [c for c in ok if (x1 - lo) - (c + 1) >= 6]           # strip beyond the seam is at least 6 px
+    if not ok:
+        return rect
+    c = int(ok[0])                                            # the left-most seam: everything beyond it goes
+    return (float(x0), float(y0), float(lo + c), float(y1))
+
+
 def finish(gray_frames, faces, best, vl, hl):
     """Chat/zones/result dict around the chosen cam candidate `best` (shared by detect() and stable_overlay.detect())."""
     n = len(gray_frames)
     h_src, w_src = gray_frames[0].shape
     rect = best["rect"]
     rect = trim_cam_edges(rect, vl, w_src, gray_frames)
+    rect = trim_cam_seam(rect, gray_frames)
     best = dict(best, rect=rect)
     inside = [f for f in faces if rect[0] <= f["cx"] <= rect[2] and rect[1] <= f["cy"] <= rect[3]]
     chat = find_chat(gray_frames, rect, w_src, h_src)

@@ -9,7 +9,7 @@ def _frames(strip_w, n=4):
         g = np.full((300, 600), 40.0, np.float32)
         g[:, :500 - strip_w] += np.linspace(0, 8, 500 - strip_w)
         if strip_w:
-            g[:, 500 - strip_w:500] = 120.0
+            g[:, 500 - strip_w:500] = 120.0 + 25.0 * np.sin(len(out) * 1.7 + np.arange(strip_w)[None, :])
         g += rng.normal(0, 1, g.shape)
         out.append(g)
     return out

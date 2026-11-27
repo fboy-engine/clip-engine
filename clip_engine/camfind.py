@@ -386,6 +386,9 @@ def trim_cam_seam(rect, gray_frames, tail=0.14):
     if not ok:
         return rect
     c = int(ok[0])                                            # the left-most seam: everything beyond it goes
+    strip = np.stack([g[y0:y1, lo + c + 2:x1].astype(np.float32) for g in gray_frames])
+    if strip.shape[2] < 4 or float(strip.std(axis=0).mean()) < 2.0:   # beyond the seam must be moving game picture
+        return rect
     return (float(x0), float(y0), float(lo + c), float(y1))
 
 

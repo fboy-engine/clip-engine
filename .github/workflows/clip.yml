@@ -390,6 +390,7 @@ jobs:
           PAYOFF: ${{ inputs.payoff_phrase }}
           SRCURL: ${{ inputs.url }}
           DENSE: ${{ inputs.dense_cut }}
+          MALLOC_ARENA_MAX: "2"          # ASR peak was 14.6 GB RSS on a 16 GB runner: stop glibc keeping one heap per thread
         run: |
           ARGS=()
           [ "$DENSE" = "true" ] && ARGS+=(--dense)

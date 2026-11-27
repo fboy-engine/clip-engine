@@ -25,7 +25,8 @@ def make(tmp, clock, avail=None, **kw):
         box["avail"] = avail
     exits, logs = [], []
     w = stagewatch.Watch(tmp, clock=clock, avail_fn=lambda: box["avail"], rss_fn=lambda: 100.0, peak_fn=lambda: 120.0,
-                         exit_fn=lambda c: exits.append(c), log=logs.append, **kw)
+                         exit_fn=lambda c: exits.append(c), log=logs.append,
+                         swap_fn=lambda: box.get("swap", 0.0), **kw)
     return w, box, exits, logs
 
 
@@ -101,6 +102,20 @@ class StageWatchTest(unittest.TestCase):
             self.assertIn("memory exhausted", msg)
             self.assertIn("captions_check", msg)
             self.assertEqual(code, stagewatch.EXIT_MEMORY)
+
+    def test_free_swap_means_low_ram_is_not_a_stop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clk = Clock()
+            w, box, _, _ = make(tmp, clk, min_avail_mb=500, strikes=2)
+            w.begin("asr", 480)
+            box["avail"], box["swap"] = 300.0, 9000.0     # RAM full, 9 GB of swap left: slow, not fatal
+            for _ in range(6):
+                self.assertIsNone(w.check())
+            box["swap"] = 500.0                           # swap nearly gone as well: now it is
+            self.assertIsNone(w.check())
+            msg, code = w.check()
+            self.assertIn("memory exhausted", msg)
+            self.assertIn("swap free 500.0 MB", msg)
 
     def test_lowest_free_memory_is_recorded_per_stage(self):
         with tempfile.TemporaryDirectory() as tmp:

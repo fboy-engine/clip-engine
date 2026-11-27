@@ -16,6 +16,7 @@ import threading
 import time
 
 TOTAL_BUDGET_SEC = 31 * 60        # under the 35 min step timeout of clip.yml, which is under the 50 min job limit
+MIN_SWAP_FREE_MB = 2048           # the guard only fires when swap is nearly gone too (clip.yml has 10 GB swap: RAM alone being full is not fatal)
 MIN_AVAIL_MB = 500                # MemAvailable below this for STRIKES polls in a row = stop before the runner freezes
 STRIKES = 5                       # (clip.yml has 10 GB swap now: only a sustained shortage counts, not a dip)
 POLL_SEC = 1.0
@@ -48,6 +49,11 @@ def mem_available_mb():
     return None if v is None else round(v / 1024.0, 1)
 
 
+def swap_free_mb():
+    v = _kb("/proc/meminfo", "SwapFree:")
+    return None if v is None else round(v / 1024.0, 1)
+
+
 def release_memory():
     """Drop Python garbage and ask glibc to hand freed heap pages back to the OS (a deleted model otherwise keeps its
     RSS and the next model stacks on top of it). Returns the RSS afterwards."""
@@ -62,10 +68,11 @@ def release_memory():
 class Watch:
     def __init__(self, out_dir, total_budget=TOTAL_BUDGET_SEC, min_avail_mb=MIN_AVAIL_MB, strikes=STRIKES, poll=POLL_SEC,
                  clock=time.monotonic, avail_fn=mem_available_mb, rss_fn=rss_mb, peak_fn=peak_rss_mb,
-                 exit_fn=os._exit, log=print):
+                 exit_fn=os._exit, log=print, swap_fn=swap_free_mb, min_swap_free_mb=MIN_SWAP_FREE_MB):
         self.out_dir, self.total_budget, self.min_avail, self.strikes_max = out_dir, total_budget, min_avail_mb, strikes
         self.poll, self.clock, self.avail_fn, self.rss_fn, self.peak_fn = poll, clock, avail_fn, rss_fn, peak_fn
         self.exit_fn, self.log = exit_fn, log
+        self.swap_fn, self.min_swap_free = swap_fn, min_swap_free_mb
         self.t0 = clock()
         self.stages, self.cur, self.strikes, self.aborted = [], None, 0, None
         self.lock = threading.RLock()
@@ -120,12 +127,13 @@ class Watch:
                         + (f" (in stage {c['stage']})" if c else ""), EXIT_TIMEOUT)
             if c is not None and now - c["t"] > c["budget_sec"]:
                 return (f"stage {c['stage']} timed out after {c['budget_sec'] / 60:.0f} min (budget for this stage)", EXIT_TIMEOUT)
-            if avail is not None and avail < self.min_avail:
+            swap = self.swap_fn()
+            if avail is not None and avail < self.min_avail and (swap is None or swap < self.min_swap_free):
                 self.strikes += 1
             else:
                 self.strikes = 0
             if self.strikes >= self.strikes_max:
-                return (f"stage {c['stage'] if c else '-'}: memory exhausted (free {avail} MB, process rss {self.rss_fn()} MB), "
+                return (f"stage {c['stage'] if c else '-'}: memory exhausted (free {avail} MB, swap free {swap} MB, process rss {self.rss_fn()} MB), "
                         f"stopping before the runner freezes", EXIT_MEMORY)
             return None
 

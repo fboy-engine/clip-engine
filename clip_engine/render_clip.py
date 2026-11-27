@@ -17,7 +17,7 @@ import numpy as np
 
 from . import (stagewatch, asr_fix, balance, caption_gaps, caption_lane, caption_sources, captions, captions_pass, cam_enhance, cam_layout, camfind, camresolve, cam_sr, config,
                download, exclusion, hooks, layout, panel_check, select_clean, srcinfo, subject, track, transcribe, trim, vision)
-from .cropplan import keep_in_frame, punch_curve, smooth
+from .cropplan import dark_exempt, keep_in_frame, punch_curve, smooth
 
 OUT_W, OUT_H = config.OUT_W, config.OUT_H
 GRAY_FPS, GRAY_W, GRAY_H = 4, 64, 36
@@ -25,6 +25,7 @@ FADE = 0.012
 END_FADE = 0.15       # short fade out at the end (0.1-0.2 s is fine; no long fade to silence)
 MOTION_FPS = 20
 PICK_FPS = 10         # start picking samples the shown strip at the grade's rate
+DARK_LUMA = 50.0   # mean luma (0-255) of a sampled frame below which an undetected subject is not held against the clip
 TRACK_GATE_PCT = 85.0  # sampled frames with the subject fully inside the gameplay crop; below it the render refuses the clip
 OPEN_TRIES = 3        # re-plan the cut at most this many times when the shown opening is frozen
 NOMINAL_CAM = layout.NOMINAL_CAM
@@ -753,6 +754,19 @@ def render(media, start, end, out_dir, hook_text="", cam_corner=None, cam_rect=N
         trk = tracking_report(sub, sub_plan, smp["times"], vision.SAMPLE_FPS, src_w=src_w, lefts=[bxs[j][0] for j in idx],
                               widths=[bxs[j][2] for j in idx], bounds=bounds, cxs=cxs)
         sub_plan["sources_pct"] = trk["sources_pct"]
+        _gl = vision.small_gray(smp["small"], 240, 135)
+        _ex = dark_exempt(sub.get("source") or [], sub["box"], smp["times"], sub_plan["cut_times"],
+                          [float(np.mean(g_)) for g_ in _gl], DARK_LUMA)
+        _n = sub_plan["samples"]
+        if _ex and _n - len(_ex) >= 0.4 * _n:      # dark frames with no detectable subject are left out of the gate
+            _ok = round(sub_plan["in_panel_pct"] * _n / 100.0)
+            sub_plan["in_panel_pct_raw"] = sub_plan["in_panel_pct"]
+            sub_plan["in_panel_pct"] = round(100.0 * _ok / (_n - len(_ex)), 1)
+            sub_plan["dark_exempt"] = len(_ex)
+            trk["in_panel_pct"], trk["dark_exempt"] = sub_plan["in_panel_pct"], len(_ex)
+            trk["in_panel_pct_raw"] = sub_plan["in_panel_pct_raw"]
+            log(f"tracking: {len(_ex)} dark sample(s) with no detectable subject left out of the gate "
+                f"(raw {sub_plan['in_panel_pct_raw']}% -> {sub_plan['in_panel_pct']}%)")
         with open(os.path.join(out_dir, "tracking.json"), "w") as f:
             json.dump(trk, f, indent=1)
         log(f"tracking: subject inside the panel in {sub_plan['in_panel_pct']}% of {sub_plan['samples']} sampled frames "

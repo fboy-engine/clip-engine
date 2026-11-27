@@ -47,3 +47,16 @@ def keep_in_frame(cxs, boxes, crop_w, src_w, margin=0.012):
         else:
             out.append(min(max(c * src_w, lo), hi) / src_w)
     return out
+
+
+def dark_exempt(sources, boxes, times, cut_times, lumas, dark_luma=50.0):
+    """Indices of samples the tracking gate may skip: the scene is dark (mean luma below `dark_luma`), the
+    subject was not really detected (source none or motion) and it is not inside the crop anyway.
+    A character that no detector can see in a dark frame is not a reason to refuse the clip."""
+    cut = set(round(float(t), 2) for t in cut_times)
+    out = []
+    for i, (s, b, t, lu) in enumerate(zip(sources, boxes, times, lumas)):
+        notok = b is None or round(float(t), 2) in cut
+        if s in ("none", "motion") and lu < dark_luma and notok:
+            out.append(i)
+    return out

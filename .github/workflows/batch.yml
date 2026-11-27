@@ -1,0 +1,144 @@
+name: batch
+# One self-running DRY RUN over the whole stream and every short clip. Nothing is ever uploaded.
+# plan (find on every source) -> list (render windows) -> render (clip.yml per window) -> summary.
+# A rejected window is a normal result: it is recorded and the batch goes on.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Dry run only (false is not offered)
+        type: choice
+        options: ["true"]
+        default: "true"
+permissions:
+  contents: read
+concurrency:
+  group: clip-engine-batch
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: m
+        run: python3 -m clip_engine.batch finds
+  plan:
+    name: plan ${{ matrix.tag }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    permissions:
+      contents: write   # clip.yml declares it for its scan job (never runs here); a caller must allow it
+    uses: ./.github/workflows/clip.yml
+    secrets: inherit
+    with:
+      tag: ${{ matrix.tag }}
+      url: ${{ matrix.url }}
+      start_sec: ${{ matrix.start_sec }}
+      end_sec: ${{ matrix.end_sec }}
+      cam_rect: ${{ matrix.cam_rect }}
+      campaign: lauren-hamden
+      warp: false
+      dry_run: true
+      find: true
+      find_model: small
+      find_top: "5"
+  list:
+    needs: plan
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: "{find,dl-check}-${{ github.run_id }}-*"
+          path: arts
+      - id: m
+        run: python3 -m clip_engine.batch renders
+      - uses: actions/upload-artifact@v4
+        with:
+          name: batch-plan
+          path: plan.json
+          retention-days: 14
+  render:
+    name: render ${{ matrix.tag }}
+    needs: list
+    if: ${{ !cancelled() && needs.list.result == 'success' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include: ${{ fromJson(needs.list.outputs.matrix) }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/clip.yml
+    secrets: inherit
+    with:
+      tag: ${{ matrix.tag }}
+      url: ${{ matrix.url }}
+      start_sec: ${{ matrix.start_sec }}
+      end_sec: ${{ matrix.end_sec }}
+      render_start: ${{ matrix.render_start }}
+      render_end: ${{ matrix.render_end }}
+      dense_cut: ${{ matrix.dense_cut }}
+      cam_rect: ${{ matrix.cam_rect }}
+      campaign: lauren-hamden
+      warp: false
+      dry_run: true
+      render: true
+  summary:
+    needs: [plan, list, render]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+      checks: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: batch-plan
+          path: .
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: clip-${{ github.run_id }}-*
+          path: arts
+      - name: Collect every result
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -m clip_engine.batch summary
+      - uses: actions/upload-artifact@v4
+        with:
+          name: batch-results
+          path: batch_out/
+          retention-days: 30
+      - name: Write docs/BATCH_RESULTS.md on main
+        run: |
+          cp batch_out/RESULTS.md /tmp/BATCH_RESULTS.md
+          rm -rf arts batch_out plan.json
+          git config user.name "fboy-engine"
+          git config user.email "240231847+fboy-engine@users.noreply.github.com"
+          for i in 1 2 3 4 5; do
+            git fetch -q origin main && git reset -q --hard origin/main
+            mkdir -p docs && cp /tmp/BATCH_RESULTS.md docs/BATCH_RESULTS.md
+            git add docs/BATCH_RESULTS.md
+            git commit -q -m "Batch results (run ${{ github.run_id }})" -m "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+          Claude-Session: https://claude.ai/code/session_01LaEs73ebVL5WCTZJAEYwuD" || { echo "nothing to commit"; exit 0; }
+            git push -q origin HEAD:main && exit 0
+            sleep 10
+          done
+          exit 1

@@ -91,10 +91,92 @@ on:
         description: Cam upscaler benchmark on the real cam crops (render_start/render_end = the window); implied by render
         type: boolean
         default: false
+  workflow_call:   # used by batch.yml; "tag" exists only here and keeps matrix jobs apart
+    inputs:
+      url:
+        type: string
+        required: false
+        default: ""
+      scan_urls:
+        type: string
+        required: false
+        default: ""
+      campaign:
+        type: string
+        default: test
+      start_sec:
+        type: string
+        default: "0"
+      end_sec:
+        type: string
+        default: "0"
+      live:
+        type: boolean
+        default: false
+      dry_run:
+        type: boolean
+        default: true
+      warp:
+        type: boolean
+        default: true
+      cookies:
+        type: boolean
+        default: false
+      transcribe_models:
+        type: string
+        default: ""
+      large_max_sec:
+        type: string
+        default: "120"
+      find:
+        type: boolean
+        default: false
+      find_model:
+        type: string
+        default: small
+      find_top:
+        type: string
+        default: "8"
+      gemini_model:
+        type: string
+        default: ""
+      render:
+        type: boolean
+        default: false
+      render_start:
+        type: string
+        default: "0"
+      render_end:
+        type: string
+        default: "0"
+      hook_text:
+        type: string
+        default: ""
+      payoff_phrase:
+        type: string
+        default: ""
+      dense_cut:
+        type: boolean
+        default: false
+      cam_corner:
+        type: string
+        default: ""
+      cam_rect:
+        type: string
+        default: ""
+      cache_only:
+        type: boolean
+        default: false
+      cam_bench:
+        type: boolean
+        default: false
+      tag:
+        type: string
+        default: ""
 permissions:
   contents: read
 concurrency:
-  group: clip-engine-${{ inputs.url || inputs.scan_urls || github.run_id }}   # one run per source URL; different clips run in parallel
+  group: clip-engine-${{ inputs.url || inputs.scan_urls || github.run_id }}${{ inputs.tag && format('-{0}-{1}', github.run_id, inputs.tag) || '' }}   # one run per source URL; different clips run in parallel
   cancel-in-progress: false
 jobs:
   scan:
@@ -141,6 +223,7 @@ jobs:
           for i in 1 2 3; do git pull --rebase -q origin main && git push origin HEAD:main && break || sleep 5; done
   clip:
     if: ${{ inputs.scan_urls == '' }}
+    continue-on-error: ${{ !!inputs.tag }}   # in a batch a rejected window must not stop the others
     runs-on: ubuntu-latest
     timeout-minutes: 50
     steps:
@@ -263,7 +346,7 @@ jobs:
       - name: Upload download check (metadata only, no video)
         uses: actions/upload-artifact@v4
         with:
-          name: dl-check-${{ github.run_id }}
+          name: dl-check-${{ github.run_id }}${{ inputs.tag && format('-{0}', inputs.tag) || '' }}
           path: out/probe.json
       - name: Whisper cache key (find reuses the tiny-small-large-v3 cache)
         if: ${{ inputs.transcribe_models != '' || inputs.find || inputs.render }}
@@ -367,7 +450,7 @@ jobs:
         if: ${{ always() && inputs.cam_bench && !inputs.render }}
         uses: actions/upload-artifact@v4
         with:
-          name: cambench-${{ github.run_id }}
+          name: cambench-${{ github.run_id }}${{ inputs.tag && format('-{0}', inputs.tag) || '' }}
           path: |
             out/cam_bench.json
             out/cam_bench.md
@@ -407,7 +490,7 @@ jobs:
         if: ${{ always() && inputs.render }}
         uses: actions/upload-artifact@v4
         with:
-          name: clip-${{ github.run_id }}
+          name: clip-${{ github.run_id }}${{ inputs.tag && format('-{0}', inputs.tag) || '' }}
           path: |
             out/clip.mp4
             out/clip.ass
@@ -438,7 +521,7 @@ jobs:
         if: ${{ always() && inputs.find }}
         uses: actions/upload-artifact@v4
         with:
-          name: find-${{ github.run_id }}
+          name: find-${{ github.run_id }}${{ inputs.tag && format('-{0}', inputs.tag) || '' }}
           path: |
             out/candidates.json
             out/dense.json
@@ -447,7 +530,7 @@ jobs:
         if: ${{ always() && inputs.transcribe_models != '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: asr-${{ github.run_id }}
+          name: asr-${{ github.run_id }}${{ inputs.tag && format('-{0}', inputs.tag) || '' }}
           path: |
             out/metrics_*.json
             out/transcript_*.json

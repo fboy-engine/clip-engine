@@ -52,6 +52,8 @@ def run(media, offset, model_name, top, out_dir, cache_dir, gen=gemini.generate)
     print(f"candidate windows: {len(wins)}", flush=True)
     if not wins:
         print("FAIL find: no candidate windows (flat audio and motion); nothing to render")
+        with open(os.path.join(out_dir, "candidates.json"), "w") as f:   # "looked, found none" is not a crash
+            json.dump({"offset": offset, "model": model_name, "candidates": []}, f)
         return 1
     t = time.monotonic()
     segs_by = transcribe_windows(audio, wins, model_name, cache_dir)

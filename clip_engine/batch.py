@@ -72,6 +72,9 @@ def renders(find_jobs, load):
                 jobs.append({"tag": tag, "source": src, "url": f["url"], "start_sec": f["start_sec"],
                              "end_sec": f["end_sec"], "render_start": _num(a), "render_end": _num(b),
                              "dense_cut": dense, "cam_rect": f["cam_rect"]})
+    only = {t.strip() for t in os.environ.get("BATCH_ONLY", "").split(",") if t.strip()}
+    if only:                                   # resume: render only these tags, never redo finished windows
+        jobs = [j for j in jobs if j["tag"] in only]
     return jobs, skipped
 
 

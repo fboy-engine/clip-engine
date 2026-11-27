@@ -10,6 +10,10 @@ on:
         type: choice
         options: ["true"]
         default: "true"
+      only:
+        description: "Resume: comma list of window tags to render (e.g. s1800-w2,c9-dense). Empty = everything"
+        type: string
+        default: ""
 permissions:
   contents: read
 concurrency:
@@ -64,6 +68,8 @@ jobs:
           pattern: "{find,dl-check}-${{ github.run_id }}-*"
           path: arts
       - id: m
+        env:
+          BATCH_ONLY: ${{ inputs.only }}
         run: python3 -m clip_engine.batch renders
       - uses: actions/upload-artifact@v4
         with:

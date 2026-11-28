@@ -14,6 +14,10 @@ on:
         description: "Resume: comma list of window tags to render (e.g. s1800-w2,c9-dense). Empty = everything"
         type: string
         default: ""
+      round:
+        description: "Round number. 0 = first batch; each finished round starts the next one by itself"
+        type: string
+        default: "0"
 permissions:
   contents: read
 concurrency:
@@ -28,6 +32,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: m
+        env:
+          BATCH_ROUND: ${{ inputs.round }}
         run: python3 -m clip_engine.batch finds
   plan:
     name: plan ${{ matrix.tag }}
@@ -52,7 +58,7 @@ jobs:
       dry_run: true
       find: true
       find_model: small
-      find_top: "5"
+      find_top: ${{ matrix.top }}
   list:
     needs: plan
     if: ${{ !cancelled() }}
@@ -70,6 +76,7 @@ jobs:
       - id: m
         env:
           BATCH_ONLY: ${{ inputs.only }}
+          BATCH_ROUND: ${{ inputs.round }}
         run: python3 -m clip_engine.batch renders
       - uses: actions/upload-artifact@v4
         with:
@@ -109,7 +116,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
-      actions: read
+      actions: write
       checks: read
     steps:
       - uses: actions/checkout@v4
@@ -158,6 +165,19 @@ jobs:
           name: batch-results
           path: batch_out/
           retention-days: 30
+      - name: Record this round's windows and start the next round
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROUND: ${{ inputs.round }}
+        run: |
+          set +e
+          python3 -m clip_engine.batch next
+          rc=$?
+          cp campaigns/lauren-hamden/batch_done.json /tmp/batch_done.json 2>/dev/null
+          echo "$rc" > /tmp/next_rc
+          nr=$((ROUND + 1))
+          if [ "$rc" = "0" ] && [ "$nr" -le 8 ]; then echo "$nr" > /tmp/next_round; fi
+          exit 0
       - name: Write docs/BATCH_RESULTS.md on main
         run: |
           cp batch_out/RESULTS.md /tmp/BATCH_RESULTS.md
@@ -168,9 +188,20 @@ jobs:
             git fetch -q origin main && git reset -q --hard origin/main
             mkdir -p docs && cp /tmp/BATCH_RESULTS.md docs/BATCH_RESULTS.md
             git add docs/BATCH_RESULTS.md
+            [ -f /tmp/batch_done.json ] && cp /tmp/batch_done.json campaigns/lauren-hamden/batch_done.json && git add campaigns/lauren-hamden/batch_done.json
             git commit -q -m "Batch results (run ${{ github.run_id }})" -m "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
           Claude-Session: https://claude.ai/code/session_01LaEs73ebVL5WCTZJAEYwuD" || { echo "nothing to commit"; exit 0; }
             git push -q origin HEAD:main && exit 0
             sleep 10
           done
           exit 1
+      - name: Start the next round (same sources, only windows not done yet)
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f /tmp/next_round ]; then
+            gh workflow run batch.yml -R "$GITHUB_REPOSITORY" -f round="$(cat /tmp/next_round)" && echo "next round started"
+          else
+            echo "no new windows (or round cap): chain ends here"
+          fi

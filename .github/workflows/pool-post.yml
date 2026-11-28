@@ -1,18 +1,20 @@
 name: pool-post
-# Posts the clip you approved on the review page. DRY RUN unless the sheet cell Campaign!B23 is exactly ONE:POOL.
+# Posts the clip you approved on the review page. Real post when Campaign!B23 is ON:POOL (standing) or ONE:POOL (once); otherwise dry run.
+# Loops ~50 min checking every 30 s, then starts itself again; the cron is only a safety net.
 on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
 permissions:
   contents: read
+  actions: write
 concurrency:
   group: pool-post
   cancel-in-progress: false
 jobs:
   post:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 58
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,4 +26,14 @@ jobs:
           IG_ACCESS_TOKEN_LAUREN: ${{ secrets.IG_ACCESS_TOKEN_LAUREN }}
           IG_USER_ID_LAUREN: ${{ secrets.IG_USER_ID_LAUREN }}
           GH_TOKEN: ${{ github.token }}
-        run: python -u -m campaign_lib.poolpost
+        run: |
+          end=$((SECONDS + 3000))
+          while [ $SECONDS -lt $end ]; do
+            python -u -m campaign_lib.poolpost || true
+            sleep 30
+          done
+      - name: Start the next watcher
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pool-post.yml -R "$GITHUB_REPOSITORY" || true

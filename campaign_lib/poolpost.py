@@ -24,7 +24,7 @@ NAME_RE = re.compile(r"^[A-Za-z0-9._-]+\.mp4$")
 def read(client, sid):
     data = client.execute("GOOGLESHEETS_BATCH_GET", {
         "spreadsheet_id": sid, "valueRenderOption": "UNFORMATTED_VALUE",
-        "ranges": ["%s!A1:D300" % REVIEW, SWITCH_CELL]})
+        "ranges": ["%s!A1:E300" % REVIEW, SWITCH_CELL]})
     vr = composio.find_key(data, "valueRanges") or []
     rows = (vr[0].get("values") if vr else None) or []
     sw = ((vr[1].get("values") if len(vr) > 1 else None) or [[""]])[0]
@@ -67,7 +67,8 @@ def run(client=None, cfg=None, env=None, download=gh_download, uploader_cls=None
         log("POOLPOST FAILED bad file name")
         return "failed"
     write(client, sid, rng, [["POSTING", ""]])                # intent first: a crash after this is never re-posted
-    real = switch.strip().upper() == "ONE:POOL"
+    mode = switch.strip().upper()
+    real = mode in ("ONE:POOL", "ON:POOL")
     try:
         path = download(name, tempfile.mkdtemp())
         item = states.Item(n=9000 + num, source="pool:" + name, kind="pool",
@@ -87,7 +88,8 @@ def run(client=None, cfg=None, env=None, download=gh_download, uploader_cls=None
         write(client, sid, rng, [["POSTED", link]])
         log("POOLPOST DRY RUN done: nothing was sent (real_upload switch is not ONE:POOL)")
         return "dryrun"
-    write(client, sid, SWITCH_CELL, [[""]])                   # single use: gone before the upload starts
+    if mode == "ONE:POOL":
+        write(client, sid, SWITCH_CELL, [[""]])               # one-shot form: gone before the upload starts (ON:POOL stays)
     try:
         _mid, link = up.post(item, poster.new_token(item.n))
     except poster.UploadRejected as e:
@@ -98,7 +100,8 @@ def run(client=None, cfg=None, env=None, download=gh_download, uploader_cls=None
         write(client, sid, rng, [["UNCERTAIN", type(e).__name__]])
         log("POOLPOST UNCERTAIN %s (no retry, check Instagram by hand)" % type(e).__name__)
         return "uncertain"
-    write(client, sid, rng, [["POSTED", link]])
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())   # the page starts its 150 min from this moment
+    write(client, sid, "%s!C%d:E%d" % (REVIEW, num, num), [["POSTED", link, stamp]])
     log("POOLPOST POSTED")
     return "posted"
 

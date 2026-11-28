@@ -32,9 +32,19 @@ function videos_() {
   while (it.hasNext()) { var f = it.next(); if (String(f.getMimeType()).indexOf('video/') === 0) out.push(f); }
   return out;
 }
+function lastPostMs_() {                                  // real post time: newest POSTED row's column E (written by the engine)
+  var sh = SpreadsheetApp.openById(SHEET_ID).getSheetByName(REVIEW), best = 0;
+  if (!sh) return 0;
+  var v = sh.getDataRange().getValues();
+  for (var i = 1; i < v.length; i++) {
+    var t = Date.parse(String(v[i][4] || ''));
+    if (String(v[i][2]) === 'POSTED' && !isNaN(t) && t > best) best = t;
+  }
+  return best;
+}
 function unlockMs_() {
-  var s = Date.parse(String(cell_(ROW_UNLOCK)));
-  return Math.max(num_('NEXT_OK'), isNaN(s) ? 0 : s);
+  var s = Date.parse(String(cell_(ROW_UNLOCK))), lp = lastPostMs_();
+  return Math.max(lp ? lp + GAP_MS : 0, isNaN(s) ? 0 : s);
 }
 function heldTs_(d) { var m = /^held:(\d+)$/.exec(d); return m ? Number(m[1]) : (d === 'held' ? 1 : -1); }
 
@@ -49,7 +59,7 @@ function reviewRow_(id) {
   var sh = SpreadsheetApp.openById(SHEET_ID).getSheetByName(REVIEW);
   if (!sh) return null;
   var v = sh.getDataRange().getValues();
-  for (var i = v.length - 1; i >= 1; i--) if (v[i][0] === id) return {state: String(v[i][2]), link: String(v[i][3] || '').trim()};
+  for (var i = v.length - 1; i >= 1; i--) if (v[i][0] === id) return {state: String(v[i][2]), link: String(v[i][3] || '').trim(), time: Date.parse(String(v[i][4] || ''))};
   return null;
 }
 function withLock_(fn) {
@@ -88,7 +98,8 @@ function getState() {
     if (rv && rv.state === 'POSTED' && LINK_RE.test(rv.link)) {                // the engine posted it: the link is in the Review tab
       try { DriveApp.getFileById(appr).setTrashed(true); } catch (e) {}
       p.setProperty('LAST_LINK', rv.link); p.deleteProperty('APPROVED_ID');
-      p.setProperty('LAST_POST', String(now)); p.setProperty('NEXT_OK', String(now + GAP_MS));
+      var pt = (rv.time && !isNaN(rv.time)) ? rv.time : now;
+      p.setProperty('LAST_POST', String(pt)); p.setProperty('NEXT_OK', String(pt + GAP_MS));
       appr = null;
     } else if ((rv && rv.state === 'FAILED') || (num_('APPROVED_AT') && now - num_('APPROVED_AT') > 25 * 60000)) {                                 // refused: the clip goes back to the list
       try { DriveApp.getFileById(appr).setDescription('shown'); } catch (e) {}

@@ -22,11 +22,22 @@ REGRESSION = {"tag": "regression", "source": "stream 2465-2519 s (known passing 
               "dense_cut": True, "cam_rect": ""}
 
 
-def finds(campaign):
-    jobs = [{"tag": f"s{a}", "kind": "stream", "url": VOD, "start_sec": str(a), "end_sec": str(b), "cam_rect": ""}
-            for a, b in SECTIONS]
+def _round():
+    try:
+        return int(os.environ.get("BATCH_ROUND", "0") or 0)
+    except ValueError:
+        return 0
+
+
+def finds(campaign, rnd=None):
+    rnd = _round() if rnd is None else rnd
+    jobs = [{"tag": f"s{a}", "kind": "stream", "url": VOD, "start_sec": str(a), "end_sec": str(b), "cam_rect": "",
+             "top": str(TOP if rnd == 0 else 10 + 5 * rnd)} for a, b in SECTIONS]
+    if rnd:
+        return jobs                                   # short clips and the regression window are round 0 only
     jobs += [{"tag": f"c{s['n']}", "kind": "clip", "url": s["url"], "start_sec": "0", "end_sec": "0",
-              "cam_rect": s.get("cam_rect", "")} for s in campaign["sources"] if s.get("kind") == "clip"]
+              "cam_rect": s.get("cam_rect", ""), "top": str(TOP)}
+             for s in campaign["sources"] if s.get("kind") == "clip"]
     return jobs
 
 
@@ -47,9 +58,34 @@ def _num(x):
     return f"{x:g}"
 
 
-def renders(find_jobs, load):
+DONE_FILE = "campaigns/lauren-hamden/batch_done.json"
+_WIN = re.compile(r"stream (\d+(?:\.\d+)?)-(\d+(?:\.\d+)?) s")
+
+
+def done_windows(paths=("docs/BATCH_RESULTS.md", "docs/BATCH_RESULTS_run1.md")):
+    """Absolute stream windows already rendered (earlier batches), so a later round never repeats one."""
+    out = []
+    for pth in paths:
+        try:
+            with open(pth, encoding="utf-8") as f:
+                out += [(float(a), float(b)) for a, b in _WIN.findall(f.read())]
+        except OSError:
+            pass
+    old = _json(DONE_FILE)
+    if old:
+        out += [(float(a), float(b)) for a, b in old]
+    return out
+
+
+def _overlaps(a, b, wins):
+    return any(a < d and c < b for c, d in wins)
+
+
+def renders(find_jobs, load, done=None, rnd=0):
     """load(job) -> (candidates best first or None, file duration or None). Returns (render jobs, skipped rows)."""
-    jobs, skipped = [dict(REGRESSION)], []
+    jobs, skipped = ([dict(REGRESSION)] if not rnd else []), []
+    seen = list(done or [])
+    picked = []
     for f in find_jobs:
         cands, dur = load(f)
         label = f"clip #{f['tag'][1:]}" if f["kind"] == "clip" else f"stream section {f['start_sec']}-{f['end_sec']} s"
@@ -60,15 +96,22 @@ def renders(find_jobs, load):
             continue
         if f["kind"] == "stream" and not dur:
             dur = float(f["end_sec"]) - float(f["start_sec"])
-        picks = cands[:1] if f["kind"] == "clip" else cands[:TOP]
+        picks = cands[:1] if f["kind"] == "clip" else cands
+        n = 0
         for i, c in enumerate(picks, 1):
             a, b = window(c["start"], c["end"], dur)
+            if f["kind"] == "stream":
+                off = float(f["start_sec"])
+                if n >= TOP or _overlaps(off + a, off + b, seen if rnd else []) or (rnd and _overlaps(off + a, off + b, picked)):
+                    continue                          # already rendered in an earlier round, or enough for this section
+                picked.append((off + a, off + b))
+                n += 1
             for dense in ((False, True) if f["kind"] == "clip" else (True,)):
                 if f["kind"] == "clip":
                     tag, src = f"{f['tag']}-{'dense' if dense else 'plain'}", label
                 else:
                     off = float(f["start_sec"])
-                    tag, src = f"{f['tag']}-w{i}", f"stream {off + a:g}-{off + b:g} s"
+                    tag, src = f"{f['tag']}-r{rnd}w{i}" if rnd else f"{f['tag']}-w{i}", f"stream {off + a:g}-{off + b:g} s"
                 jobs.append({"tag": tag, "source": src, "url": f["url"], "start_sec": f["start_sec"],
                              "end_sec": f["end_sec"], "render_start": _num(a), "render_end": _num(b),
                              "dense_cut": dense, "cam_rect": f["cam_rect"]})
@@ -222,7 +265,7 @@ def _output(name, value):
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="clip_engine.batch")
-    p.add_argument("cmd", choices=["finds", "renders", "summary"])
+    p.add_argument("cmd", choices=["finds", "renders", "summary", "next"])
     p.add_argument("--artifacts", default="arts")
     p.add_argument("--plan", default="plan.json")
     p.add_argument("--out", default="batch_out")
@@ -242,11 +285,25 @@ def main(argv=None):
             if pr.get("duration") and pr["duration"] < 25:
                 return [], pr["duration"]
             return None, pr.get("duration")
-        jobs, skipped = renders(finds(campaign), load)
+        jobs, skipped = renders(finds(campaign), load, done_windows(), _round())
         with open(a.plan, "w") as f:
             json.dump({"jobs": jobs, "skipped": skipped}, f, indent=1)
         _output("matrix", jobs)
         return 0
+    if a.cmd == "next":                               # after a round: record its windows, say whether another round has work
+        plan = _json(a.plan) or {"jobs": []}
+        new = []
+        for j in plan["jobs"]:
+            if j["tag"] == "regression" or "render_start" not in j:
+                continue
+            o = float(j["start_sec"])
+            new.append((o + float(j["render_start"]), o + float(j["render_end"])))
+        old = _json(DONE_FILE) or []
+        os.makedirs(os.path.dirname(DONE_FILE), exist_ok=True)
+        with open(DONE_FILE, "w") as f:
+            json.dump(old + [list(w) for w in new if list(w) not in old], f)
+        print("NEXT_ROUND", "yes" if new else "no", len(new))
+        return 0 if new else 3
     plan = _json(a.plan)
     os.makedirs(a.out, exist_ok=True)
     url = f"https://github.com/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{run_id}"

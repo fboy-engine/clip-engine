@@ -104,3 +104,14 @@ class Workflows(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Rounds(unittest.TestCase):
+    def test_later_round_skips_done_and_regression(self):
+        f = [{"tag": "s0", "kind": "stream", "url": "u", "start_sec": "0", "end_sec": "600", "cam_rect": ""}]
+        cands = [{"start": 100, "end": 120}, {"start": 300, "end": 320}, {"start": 305, "end": 325}]
+        jobs, _ = batch.renders(f, lambda j: (cands, 600), done=[(90, 135)], rnd=1)
+        tags = [j["tag"] for j in jobs]
+        self.assertNotIn("regression", tags)
+        self.assertEqual(len(jobs), 1)                   # first is done, third overlaps the second
+        self.assertTrue(tags[0].startswith("s0-r1"))

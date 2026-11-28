@@ -25,7 +25,7 @@ class FakeUp:
         raise AssertionError("dry run must not post")
 
 
-HEAD = ["file_id", "name", "state", "link"]
+HEAD = ["file_id", "name", "state", "link", "posted_utc"]
 
 
 class PoolPost(unittest.TestCase):

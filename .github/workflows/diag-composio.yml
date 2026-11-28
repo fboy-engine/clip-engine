@@ -1,0 +1,28 @@
+name: diag-composio
+# Prints which toolkits the repo COMPOSIO_API_KEY can see (toolkit + status only, never keys).
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - env:
+          COMPOSIO_API_KEY: ${{ secrets.COMPOSIO_API_KEY }}
+        run: |
+          python - <<'PY'
+          from campaign_lib import composio
+          c = composio.Client()
+          r = c._call("GET", "/connected_accounts?limit=100")
+          items = r.get("items") or r.get("data") or []
+          print("DIAG accounts visible to the repo key:", len(items))
+          for i in items:
+              tk = i.get("toolkit") or {}
+              print("DIAG", (tk.get("slug") if isinstance(tk, dict) else tk), i.get("status"), "user=" + str(i.get("user_id"))[:12])
+          PY

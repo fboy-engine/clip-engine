@@ -13,7 +13,7 @@ import tempfile
 import time
 
 from . import caption as capmod
-from . import composio, config, instagram, poster, states
+from . import composio, config, ig_composio, instagram, poster, states
 from .editor import FALLBACK_LINE
 
 REVIEW = "Review"
@@ -36,12 +36,17 @@ def write(client, sid, rng, values):
         "spreadsheet_id": sid, "valueInputOption": "RAW", "data": [{"range": rng, "values": values}]})
 
 
+class _NoClient:
+    def execute(self, *a, **k):
+        raise RuntimeError("dry run: no Composio call")
+
+
 def gh_download(name, outdir):
     subprocess.run(["gh", "release", "download", "pool", "-p", name, "-D", outdir, "--clobber"], check=True)
     return os.path.join(outdir, name)
 
 
-def run(client=None, cfg=None, env=None, download=gh_download, uploader_cls=instagram.InstagramUploader, log=print):
+def run(client=None, cfg=None, env=None, download=gh_download, uploader_cls=None, log=print):
     env = os.environ if env is None else env
     cfg = cfg or config.load()
     client = client or composio.Client()
@@ -71,7 +76,10 @@ def run(client=None, cfg=None, env=None, download=gh_download, uploader_cls=inst
         write(client, sid, rng, [["FAILED", "prepare: %s" % type(e).__name__]])
         log("POOLPOST FAILED prepare %s" % type(e).__name__)
         return "failed"
-    up = uploader_cls(env.get("IG_ACCESS_TOKEN_LAUREN", ""), env.get("IG_USER_ID_LAUREN", ""), real=real)
+    if uploader_cls is not None:
+        up = uploader_cls(env.get("IG_ACCESS_TOKEN_LAUREN", ""), env.get("IG_USER_ID_LAUREN", ""), real=real)
+    else:                                                     # the user's Composio Instagram connection (default)
+        up = ig_composio.ComposioInstagramUploader(None if real else _NoClient(), real=real)
     if not real:
         for line in up.plan(item):
             log("DRYRUN_REQUEST " + line)

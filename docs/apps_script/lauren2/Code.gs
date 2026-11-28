@@ -90,7 +90,7 @@ function getState() {
       p.setProperty('LAST_LINK', rv.link); p.deleteProperty('APPROVED_ID');
       p.setProperty('LAST_POST', String(now)); p.setProperty('NEXT_OK', String(now + GAP_MS));
       appr = null;
-    } else if (rv && rv.state === 'FAILED') {                                 // refused: the clip goes back to the list
+    } else if ((rv && rv.state === 'FAILED') || (num_('APPROVED_AT') && now - num_('APPROVED_AT') > 25 * 60000)) {                                 // refused: the clip goes back to the list
       try { DriveApp.getFileById(appr).setDescription('shown'); } catch (e) {}
       p.deleteProperty('APPROVED_ID'); appr = null;
     }
@@ -126,13 +126,19 @@ function decide(id, action) {
     else if (action === 'keep') f.setDescription('held:' + Date.now());
     else if (action === 'approve') {
       if (!st.open) return {ok: false, message: 'Approve is not open yet.', state: st};
-      p.setProperty('APPROVED_ID', id);
+      p.setProperty('APPROVED_ID', id); p.setProperty('APPROVED_AT', String(Date.now()));
       f.setDescription('approved');
       markReview_(id, f.getName(), 'APPROVED', '');
       SpreadsheetApp.flush();
     } else return {ok: false, message: 'Unknown action', state: st};
     return {ok: true, state: getState()};
   });
+}
+
+function cancelWait() {
+  var p = props_(), id = p.getProperty('APPROVED_ID');
+  if (id) { try { DriveApp.getFileById(id).setDescription('shown'); } catch (e) {} p.deleteProperty('APPROVED_ID'); }
+  return getState();
 }
 
 function dismissLink() { props_().deleteProperty('LAST_LINK'); return getState(); }

@@ -27,7 +27,7 @@ function render(s,force){
   errEl.textContent='';cur=s;skew=s.now-Date.now();clearInterval(tick);
   var k=s.phase+'|'+(s.link||'')+'|'+(s.open?1:0)+'|'+s.clips.map(function(c){return c.id}).join(',');
   if(k===sig&&!force&&s.phase!=='idle')return;sig=k;app.textContent='';
-  if(s.phase==='waiting'){app.appendChild(el('div','msg','Wait for the link...'));return}
+  if(s.phase==='waiting'){app.appendChild(el('div','msg','Wait for the link...'));var cw=el('button','keep big','Cancel');cw.onclick=function(){run('cancelWait',[],function(n){render(n,true)})};app.appendChild(cw);return}
   if(s.phase==='link'){app.appendChild(el('div','msg','Posted'));
     var cp=el('button','ok big','Copy link');cp.onclick=function(){copy(s.link,cp)};app.appendChild(cp);
     var dn=el('button','keep big','Done');dn.onclick=function(){run('dismissLink',[],function(n){render(n,true)})};app.appendChild(dn);return}

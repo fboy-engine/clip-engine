@@ -1,0 +1,27 @@
+name: pool-post
+# Posts the clip you approved on the review page. DRY RUN unless the sheet cell Campaign!B23 is exactly ONE:POOL.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pool-post
+  cancel-in-progress: false
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Post the approved clip (dry run unless the switch is on)
+        env:
+          COMPOSIO_API_KEY: ${{ secrets.COMPOSIO_API_KEY }}
+          IG_ACCESS_TOKEN_LAUREN: ${{ secrets.IG_ACCESS_TOKEN_LAUREN }}
+          IG_USER_ID_LAUREN: ${{ secrets.IG_USER_ID_LAUREN }}
+          GH_TOKEN: ${{ github.token }}
+        run: python -u -m campaign_lib.poolpost

@@ -45,6 +45,13 @@ function markReview_(id, name, state, link) {
   for (var i = 1; i < v.length; i++) if (v[i][0] === id) { sh.getRange(i + 1, 3, 1, 2).setValues([[state, link || '']]); return; }
   sh.appendRow([id, name || '', state, link || '']);
 }
+function reviewRow_(id) {
+  var sh = SpreadsheetApp.openById(SHEET_ID).getSheetByName(REVIEW);
+  if (!sh) return null;
+  var v = sh.getDataRange().getValues();
+  for (var i = v.length - 1; i >= 1; i--) if (v[i][0] === id) return {state: String(v[i][2]), link: String(v[i][3] || '').trim()};
+  return null;
+}
 function withLock_(fn) {
   var l = LockService.getScriptLock();
   if (!l.tryLock(20000)) return {ok: false, message: 'Busy, try again.'};
@@ -77,13 +84,15 @@ function syncPool() {
 function getState() {
   var p = props_(), now = Date.now(), appr = p.getProperty('APPROVED_ID');
   if (appr) {
-    var link = String(cell_(ROW_LINK) || '').trim();
-    if (LINK_RE.test(link) && link !== p.getProperty('BASE_LINK')) {          // posted: the new link has arrived
+    var rv = reviewRow_(appr);
+    if (rv && rv.state === 'POSTED' && LINK_RE.test(rv.link)) {                // the engine posted it: the link is in the Review tab
       try { DriveApp.getFileById(appr).setTrashed(true); } catch (e) {}
-      p.setProperty('LAST_LINK', link); p.deleteProperty('APPROVED_ID');
+      p.setProperty('LAST_LINK', rv.link); p.deleteProperty('APPROVED_ID');
       p.setProperty('LAST_POST', String(now)); p.setProperty('NEXT_OK', String(now + GAP_MS));
-      markReview_(appr, '', 'POSTED', link);
       appr = null;
+    } else if (rv && rv.state === 'FAILED') {                                 // refused: the clip goes back to the list
+      try { DriveApp.getFileById(appr).setDescription('shown'); } catch (e) {}
+      p.deleteProperty('APPROVED_ID'); appr = null;
     }
   }
   var unlock = unlockMs_(), open = now >= unlock;
@@ -117,11 +126,9 @@ function decide(id, action) {
     else if (action === 'keep') f.setDescription('held:' + Date.now());
     else if (action === 'approve') {
       if (!st.open) return {ok: false, message: 'Approve is not open yet.', state: st};
-      p.setProperty('BASE_LINK', String(cell_(ROW_LINK) || '').trim());
       p.setProperty('APPROVED_ID', id);
       f.setDescription('approved');
       markReview_(id, f.getName(), 'APPROVED', '');
-      camp_().getRange(ROW_APPROVE, 2).setValue(true);
       SpreadsheetApp.flush();
     } else return {ok: false, message: 'Unknown action', state: st};
     return {ok: true, state: getState()};

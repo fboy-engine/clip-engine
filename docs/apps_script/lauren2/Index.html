@@ -25,19 +25,23 @@ function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null
 function fmt(ms){var s=Math.max(0,Math.ceil(ms/1000)),h=Math.floor(s/3600),m=Math.floor(s%3600/60),r=s%60;return h+':'+(m<10?'0':'')+m+':'+(r<10?'0':'')+r}
 function render(s,force){
   errEl.textContent='';cur=s;skew=s.now-Date.now();clearInterval(tick);
-  var k=s.phase+'|'+(s.link||'')+'|'+(s.open?1:0)+'|'+s.clips.map(function(c){return c.id}).join(',');
-  if(k===sig&&!force&&s.phase!=='idle')return;sig=k;app.textContent='';
+  var pv=s.preview||[];
+  var k=s.phase+'|'+(s.link||'')+'|'+(s.open?1:0)+'|'+s.clips.map(function(c){return c.id}).join(',')+'|'+pv.map(function(c){return c.id}).join(',');
+  if(k===sig&&!force&&s.phase==='idle'&&idleM){var m0=idleM;var u0=function(){var l=s.unlock-(Date.now()+skew);if(l>0){m0.textContent='Next round in '+fmt(l)}else{m0.textContent='No clips waiting';clearInterval(tick);poll()}};u0();tick=setInterval(u0,1000);return}
+  if(k===sig&&!force&&s.phase!=='idle')return;sig=k;app.textContent='';idleM=null;
   if(s.phase==='waiting'){app.appendChild(el('div','msg','Wait for the link...'));var cw=el('button','keep big','Cancel');cw.onclick=function(){run('cancelWait',[],function(n){render(n,true)})};app.appendChild(cw);return}
   if(s.phase==='link'){app.appendChild(el('div','msg','Posted'));
     var cp=el('button','ok big','Copy link');cp.onclick=function(){copy(s.link,cp)};app.appendChild(cp);
     var dn=el('button','keep big','Done');dn.onclick=function(){run('dismissLink',[],function(n){render(n,true)})};app.appendChild(dn);return}
   if(s.phase==='idle'){
-    var m=el('div','msg','');app.appendChild(m);
+    var m=el('div','msg','');app.appendChild(m);idleM=m;
     var upd=function(){var left=s.unlock-(Date.now()+skew);
       if(left>0){m.textContent='Next round in '+fmt(left)}
       else{m.textContent='No clips waiting';clearInterval(tick);poll()}};
     upd();tick=setInterval(upd,1000);
-    if(s.saved)app.appendChild(el('div','msg',s.saved+' saved for the next round'));return}
+    if(s.saved)app.appendChild(el('div','msg',s.saved+' saved for the next round'));
+    pv.forEach(function(c){var card=el('div','card'),n=el('div','name');n.appendChild(el('span',null,c.name+' (new)'));card.appendChild(n);
+      var v=el('div','vid');loadVideo(c.id,v);card.appendChild(v);app.appendChild(card)});return}
   s.clips.forEach(function(c){
     var card=el('div','card'),n=el('div','name');n.appendChild(el('span',null,c.name));card.appendChild(n);
     var v=el('div','vid');loadVideo(c.id,v);card.appendChild(v);
@@ -47,7 +51,7 @@ function render(s,force){
     r.appendChild(btn('Delete','del',c,'delete','Tap again to delete'));
     card.appendChild(r);app.appendChild(card)})
 }
-var blobs={};
+var blobs={},idleM=null;
 function loadVideo(id,box){
   function show(u){box.textContent='';var vd=document.createElement('video');vd.src=u;vd.controls=true;vd.playsInline=true;vd.setAttribute('playsinline','');vd.preload='auto';vd.style.cssText='position:absolute;inset:0;width:100%;height:100%;background:#000';box.appendChild(vd)}
   if(blobs[id]){show(blobs[id]);return}

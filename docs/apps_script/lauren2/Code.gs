@@ -110,7 +110,7 @@ function getState() {
   var last = p.getProperty('LAST_LINK');
   if (last) return {phase: 'link', link: last, clips: [], now: now, unlock: unlock};
   if (appr) return {phase: 'waiting', clips: [], now: now, unlock: unlock};
-  var files = videos_(), shown = [], hidden = 0, lastPost = num_('LAST_POST');
+  var files = videos_(), shown = [], hidden = 0, fresh = [], lastPost = num_('LAST_POST');
   if (open && !files.some(function (f) { return f.getDescription() === 'shown'; })) {   // new round: bring in new + kept clips
     files.forEach(function (f) {
       var d = f.getDescription() || '', h = heldTs_(d);
@@ -120,11 +120,14 @@ function getState() {
   files.forEach(function (f) {
     var d = f.getDescription() || '';
     if (d === 'shown') shown.push({id: f.getId(), name: f.getName().replace(/\.[^.]+$/, ''), ts: f.getDateCreated().getTime()});
-    else if (d === '' || heldTs_(d) >= 0) hidden++;
+    else if (d === '') fresh.push({id: f.getId(), name: f.getName().replace(/\.[^.]+$/, ''), ts: f.getDateCreated().getTime()});
+    else if (heldTs_(d) >= 0) hidden++;
   });
+  fresh.sort(function (a, b) { return b.ts - a.ts; });
   shown.sort(function (a, b) { return b.ts - a.ts; });
   return {phase: shown.length ? 'list' : 'idle', clips: shown.map(function (c) { return {id: c.id, name: c.name}; }),
-          open: open, unlock: unlock, now: now, saved: hidden};
+          open: open, unlock: unlock, now: now, saved: hidden,
+          preview: (shown.length || open) ? [] : fresh.map(function (c) { return {id: c.id, name: c.name}; })};   // new clips: watch only until the timer ends
 }
 
 function decide(id, action) {
